@@ -207,6 +207,11 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
                     member_needs[dest] = (required[target], _members_signature(required[target]))
         entries.append(entry)
     check_cancel(cancel_requested)
+    if require_mra_match and manifest_error is not None and entries:
+        # The send manifest is missing or stale (for example Run was cancelled).  That says
+        # nothing about the individual ZIPs, so do not connect and do not delete anything.
+        return {"dry_run":dry_run,"entries":entries,"connection_configured":bool(t.get("host")),
+                "blocked_reason":manifest_error}
     if not entries:
         return {"dry_run":dry_run,"entries":entries,"connection_configured":bool(t.get("host"))}
     if dry_run and not t.get("host"):
@@ -220,18 +225,28 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
         ftp.connect(t["host"],int(t.get("port",21)),timeout=30)
         ftp.login(t.get("username","anonymous"),password)
         ftp.voidcmd("TYPE I")
+        listings = {}
+        current_dir = None
         for e in entries:
             check_cancel(cancel_requested)
             if e.get("action") == "conflict":
                 if not dry_run:
                     _delete_held_entry(ftp, e, work, cache, server, progress, cancel_requested)
+                    ftp.voidcmd("TYPE I")
+                    listings.pop(e["destination"].rsplit("/", 1)[0], None)
+                    current_dir = None
                 continue
             dest=e["destination"]
             progress(f"送信先を確認中: {dest}")
             parent,name=dest.rsplit("/",1)
-            _ensure_remote_directory(ftp, parent)
-            names={PurePosixPath(x).name for x in ftp.nlst()}
-            ftp.voidcmd("TYPE I")
+            if current_dir != parent or parent not in listings:
+                _ensure_remote_directory(ftp, parent)
+                current_dir = parent
+                if parent not in listings:
+                    # One listing per folder is enough; Send keeps it current as it changes files.
+                    listings[parent] = {PurePosixPath(x).name for x in ftp.nlst()}
+                    ftp.voidcmd("TYPE I")
+            names = listings[parent]
             e["collision"]="existing" if name in names else "none"
             temp=name+".uploading"
             cache_key = json.dumps([server, dest], ensure_ascii=False)
@@ -280,7 +295,7 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
                 if e["collision"] == "different" and cache_key in cache:
                     del cache[cache_key]
                     if not dry_run: _remember_send_cache(work, cache)
-            if e["collision"]=="none" and temp in names: e["collision"]="temporary-exists"
+            if temp in names: e["stale_temp"]=True
             replacing = replace_different and e["collision"]=="different"
             if replacing: e["will_replace"]=True
             if dry_run: continue
@@ -290,12 +305,17 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
             if e["collision"]=="satisfied":
                 e["action"]="already_satisfied"
                 continue
-            if skip_matching and e["collision"]=="temporary-exists" or (
-                    skip_matching and e["collision"]=="different" and not replacing):
+            if skip_matching and e["collision"]=="different" and not replacing:
                 e["action"]="conflict"
                 continue
             if e["collision"]!="none" and not replacing:
                 raise ValueError(f"remote collision: {dest}: {e['collision']}")
+            if e.get("stale_temp"):
+                # An interrupted earlier upload of ours; the real ZIP is never touched by it.
+                with contextlib.suppress(ftplib.all_errors):
+                    ftp.delete(temp)
+                names.discard(temp)
+                progress(f"中断された一時ファイルを削除: {temp}")
             try:
                 progress(f"ZIP送信中: {dest}")
                 with open(e["source"],"rb") as f:
@@ -316,6 +336,13 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
                 else:
                     ftp.rename(temp,name)
                     e["action"]="uploaded"
+                    spare = name + ".replaced"
+                    if spare in names:  # left by an interrupted replacement
+                        with contextlib.suppress(ftplib.all_errors):
+                            ftp.delete(spare)
+                        names.discard(spare)
+                names.discard(temp)
+                names.add(name)
                 remote_mdtm = _remote_mdtm(ftp, name)
                 if remote_mdtm is not None:
                     cache[cache_key] = {"size":e["size"], "sha1":e["sha1"], "mdtm":remote_mdtm}

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -160,6 +161,57 @@ class GuiTests(unittest.TestCase):
                 window._start("run")
                 self.assertEqual(window.worker.config["mame_dat"], str(dat))
                 window.worker = None
+                window.deleteLater()
+
+    def test_missing_roms_tab_lists_parts_and_copies_text(self):
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            (work / "send-manifest.json").write_text(json.dumps({
+                "required": {"b.zip": []},
+                "excluded": {
+                    "b.zip": [{"mra": "A.mra", "missing": ["x (CRC 11111111)"]}],
+                    "v.zip": [{"mra": "V.mra", "missing": ["p (CRC 22222222)", "q"]}]}}),
+                encoding="utf-8")
+            settings = QSettings(str(work / "settings.ini"), QSettings.Format.IniFormat)
+            with (mock.patch.object(arcadegui, "WORK_DIR", work),
+                  mock.patch.object(arcadegui, "QSettings", return_value=settings)):
+                window = arcadegui.MainWindow()
+                tree = window.missing_roms
+                self.assertEqual(window.tabs.tabText(4), "不足ROM (2)")
+                self.assertEqual(tree.topLevelItem(0).text(0), "v.zip")
+                self.assertEqual(tree.topLevelItem(0).text(1), "未生成")
+                clipboard = QApplication.clipboard()
+                tree.topLevelItem(0).child(0).child(0).setSelected(True)
+                window._copy_missing_roms()
+                self.assertEqual(clipboard.text(), "p (CRC 22222222)")
+                tree.clearSelection()
+                tree.topLevelItem(0).setSelected(True)
+                tree.topLevelItem(0).child(0).setSelected(True)
+                window._copy_missing_roms()
+                self.assertEqual(clipboard.text(), "v.zip\nV.mra\np (CRC 22222222)\nq")
+                window._copy_missing_roms(everything=True)
+                self.assertEqual(clipboard.text().splitlines()[:3],
+                                 ["v.zip", "  V.mra", "    p (CRC 22222222)"])
+                self.assertEqual(len(clipboard.text().splitlines()), 7)
+                window.deleteLater()
+
+    def test_blocked_send_shows_one_clear_message(self):
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            settings = QSettings(str(work / "settings.ini"), QSettings.Format.IniFormat)
+            with (mock.patch.object(arcadegui, "WORK_DIR", work),
+                  mock.patch.object(arcadegui, "QSettings", return_value=settings)):
+                window = arcadegui.MainWindow()
+                window._last_result = ("send", {"entries": [{"destination": "/x/a.zip", "action": "conflict"}],
+                                                "blocked_reason": "Run is required before Send"})
+                window._log_mode = "send"
+                window._render_log()
+                window._render_status()
+                text = window.log.toPlainText()
+                self.assertIn("Run is required before Send", text)
+                self.assertIn("削除", text)
+                self.assertNotIn("a.zip", text)
+                self.assertIn("Runが必要", window.status.text())
                 window.deleteLater()
 
 

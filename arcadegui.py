@@ -273,6 +273,8 @@ class MainWindow(QMainWindow):
             else:
                 lines = [self._translate_progress(line) for line in lines]
             self.log.setPlainText("\n".join(lines))
+        elif self._log_mode == "send" and self._last_result and self._last_result[1].get("blocked_reason"):
+            self.log.setPlainText(self._t("send_needs_run", reason=self._last_result[1]["blocked_reason"]))
         elif self._log_mode == "send" and self._last_result:
             entries = self._last_result[1]["entries"]
             sent = sum(e.get("action") in ("uploaded", "replaced") for e in entries)
@@ -353,8 +355,11 @@ class MainWindow(QMainWindow):
                     summary += self._t("saved_mra")
             else:
                 entries = result["entries"]
-                summary = self._t("sent", sent=sum(e.get("action") == "uploaded" for e in entries),
-                                  conflicts=sum(e.get("action") == "conflict" for e in entries))
+                if result.get("blocked_reason"):
+                    summary = self._t("send_stopped")
+                else:
+                    summary = self._t("sent", sent=sum(e.get("action") in ("uploaded", "replaced") for e in entries),
+                                      conflicts=sum(e.get("action") == "conflict" for e in entries))
             self.status.setText(summary)
         elif self._last_status_raw:
             self.status.setText(self._translate_progress(self._last_status_raw))

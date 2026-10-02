@@ -514,31 +514,89 @@ class BuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"only FTP is supported"):
             a.transfer(self.db,self.work,{"transfer":{"protocol":"sftp"}})
 
+    class _DeletingFTP:
+        files = {}
+        connected = 0
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def connect(self, *args, **kwargs): type(self).connected += 1
+        def login(self, *args, **kwargs): pass
+        def voidcmd(self, *args): pass
+        def cwd(self, *args): pass
+        def nlst(self): return list(self.files)
+        def delete(self, name): del self.files[name]
+
     def test_send_holds_zip_that_no_longer_matches_current_mra(self):
         self.zip("input", "game.zip", {"rom": b"old"})
         self.mra("Game.mra", f'<rom index="0" zip="game.zip"><part name="rom" crc="{crc(b"old")}"/></rom>')
         a.build_ready(self.db, self.work)
         self.mra("Game.mra", f'<rom index="0" zip="game.zip"><part name="rom" crc="{crc(b"new")}"/></rom>')
-        class FakeFTP:
-            files = {"game.zip": b"stale remote zip"}
-            def __enter__(self): return self
-            def __exit__(self, *args): pass
-            def connect(self, *args, **kwargs): pass
-            def login(self, *args, **kwargs): pass
-            def voidcmd(self, *args): pass
-            def cwd(self, *args): pass
-            def nlst(self): return list(self.files)
-            def delete(self, name): del self.files[name]
-        with mock.patch.object(a.ftplib, "FTP", FakeFTP):
+        a.build_ready(self.db, self.work)  # Run again: the manifest now describes the new MRA
+        fake = self._DeletingFTP
+        fake.files = {"game.zip": b"stale remote zip"}
+        with mock.patch.object(a.ftplib, "FTP", fake):
             result = a.transfer(self.db, self.work, {"mister":{"host":"example.test"}},
                                 dry_run=False, require_mra_match=True)
         entry = result["entries"][0]
         self.assertEqual(entry["action"], "conflict")
         self.assertEqual(entry["collision"], "local-mra-mismatch")
-        self.assertIn("MRA catalog changed", entry["reason"])
+        self.assertIn("no current MRA requires this ZIP", entry["reason"])
         self.assertEqual(entry["cleanup"], {"remote":"deleted", "local":"deleted"})
         self.assertFalse((self.work / "out" / "game.zip").exists())
-        self.assertEqual(FakeFTP.files, {})
+        self.assertEqual(fake.files, {})
+
+    def test_send_never_deletes_when_run_is_required(self):
+        self.zip("input", "game.zip", {"rom": b"old"})
+        self.mra("Game.mra", f'<rom index="0" zip="game.zip"><part name="rom" crc="{crc(b"old")}"/></rom>')
+        a.build_ready(self.db, self.work)
+        local = self.work / "out" / "game.zip"
+        fake = self._DeletingFTP
+        config = {"mister":{"host":"example.test"}}
+        # Stale catalog: an MRA changed after the last Run.
+        self.mra("Game.mra", f'<rom index="0" zip="game.zip"><part name="rom" crc="{crc(b"new")}"/></rom>')
+        for case in ("stale catalog", "missing manifest"):
+            if case == "missing manifest":
+                (self.work / "send-manifest.json").unlink()
+            fake.files = {"game.zip": b"remote zip"}; fake.connected = 0
+            with mock.patch.object(a.ftplib, "FTP", fake):
+                result = a.transfer(self.db, self.work, config, dry_run=False, skip_matching=True,
+                                    require_mra_match=True, replace_different=True)
+            self.assertIn("Run is required", result["blocked_reason"], case)
+            self.assertEqual(result["entries"][0]["action"], "conflict", case)
+            self.assertNotIn("cleanup", result["entries"][0], case)
+            self.assertTrue(local.exists(), case)
+            self.assertEqual(fake.files, {"game.zip": b"remote zip"}, case)
+            self.assertEqual(fake.connected, 0, case)
+
+    def test_send_removes_stale_uploading_file_and_sends_the_zip(self):
+        self.zip("input", "game.zip", {"rom": b"abc"})
+        self.mra("Game.mra", f'<rom index="0" zip="game.zip"><part name="rom" crc="{crc(b"abc")}"/></rom>')
+        a.build_ready(self.db, self.work)
+        fake = self._ReplaceFTP
+        fake.files = {"game.zip.uploading": b"half", "game.zip.replaced": b"old copy"}; fake.log = []
+        with mock.patch.object(a.ftplib, "FTP", fake):
+            result = a.transfer(self.db, self.work, {"mister": {"host": "example.test"}}, dry_run=False,
+                                skip_matching=True, require_mra_match=True, replace_different=True)
+        self.assertEqual(result["entries"][0]["action"], "uploaded")
+        self.assertEqual(fake.files, {"game.zip": (self.work / "out" / "game.zip").read_bytes()})
+
+    def test_send_lists_each_remote_folder_only_once(self):
+        for index in range(3):
+            self.zip("input", f"g{index}.zip", {"rom": bytes([index]) * 4})
+            self.mra(f"G{index}.mra", f'<rom index="0" zip="g{index}.zip"><part name="rom" crc="{crc(bytes([index]) * 4)}"/></rom>')
+        a.build_ready(self.db, self.work)
+        class CountingFTP(self._ReplaceFTP):
+            listings = 0
+            def nlst(self):
+                type(self).listings += 1
+                return super().nlst()
+        CountingFTP.files = {}; CountingFTP.log = []
+        with mock.patch.object(a.ftplib, "FTP", CountingFTP):
+            result = a.transfer(self.db, self.work, {"mister": {"host": "example.test"}}, dry_run=False,
+                                skip_matching=True, require_mra_match=True, replace_different=True)
+        self.assertEqual([e["action"] for e in result["entries"]], ["uploaded"] * 3)
+        self.assertEqual(CountingFTP.listings, 1)
+        self.assertEqual(sorted(CountingFTP.files), ["g0.zip", "g1.zip", "g2.zip"])
 
     def test_send_requires_all_parts_of_shared_zip(self):
         self.zip("input", "shared.zip", {"one": b"one", "two": b"two"})
