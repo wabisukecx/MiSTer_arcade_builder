@@ -391,6 +391,77 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(fake.files, {"have.zip": (self.work / "out" / "have.zip").read_bytes()})
         self.assertEqual(fake.log[-1], ("have.zip.uploading", "have.zip"))
 
+    def test_send_skips_remote_zip_that_already_contains_every_required_member(self):
+        self._shared_zip_with_unfinished_alternative()
+        local = self.work / "out" / "have.zip"
+        with zipfile.ZipFile(local) as z:
+            members = {info.filename: z.read(info) for info in z.infolist()}
+        remote = self.base / "remote.zip"
+        with zipfile.ZipFile(remote, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            for name, data in members.items():
+                z.writestr(name, data)
+            z.writestr("extra.bin", b"not required")
+        self.assertNotEqual(remote.read_bytes(), local.read_bytes())
+        fake = self._ReplaceFTP
+        fake.files = {"have.zip": remote.read_bytes()}; fake.log = []
+        config = {"mister": {"host": "example.test"}}
+        with mock.patch.object(a.ftplib, "FTP", fake):
+            dry = a.transfer(self.db, self.work, config, dry_run=True, skip_matching=True,
+                             require_mra_match=True, replace_different=True)
+            self.assertEqual(dry["entries"][0]["collision"], "satisfied")
+            self.assertNotIn("will_replace", dry["entries"][0])
+            result = a.transfer(self.db, self.work, config, dry_run=False, skip_matching=True,
+                                require_mra_match=True, replace_different=True)
+        self.assertEqual(result["entries"][0]["action"], "already_satisfied")
+        self.assertEqual(fake.files, {"have.zip": remote.read_bytes()})
+        self.assertEqual(fake.log, [])
+
+    def test_send_replaces_remote_zip_missing_a_required_member(self):
+        self.zip("a", "two.zip", {"x": b"abc", "y": b"def"})
+        self.mra("Two.mra", f'<rom index="0" zip="two.zip"><part name="x" crc="{crc(b"abc")}"/>'
+                            f'<part name="y" crc="{crc(b"def")}"/></rom>')
+        a.build_ready(self.db, self.work)
+        local = self.work / "out" / "two.zip"
+        remote = self.base / "partial.zip"
+        with zipfile.ZipFile(remote, "w") as z:
+            z.writestr("x", b"abc")
+        fake = self._ReplaceFTP
+        fake.files = {"two.zip": remote.read_bytes()}; fake.log = []
+        with mock.patch.object(a.ftplib, "FTP", fake):
+            result = a.transfer(self.db, self.work, {"mister": {"host": "example.test"}},
+                                dry_run=False, skip_matching=True, require_mra_match=True,
+                                replace_different=True)
+        self.assertEqual(result["entries"][0]["action"], "replaced")
+        self.assertEqual(fake.files, {"two.zip": local.read_bytes()})
+
+    def test_send_cache_remembers_member_satisfaction_without_downloading(self):
+        self._shared_zip_with_unfinished_alternative()
+        local = self.work / "out" / "have.zip"
+        with zipfile.ZipFile(local) as z:
+            members = {info.filename: z.read(info) for info in z.infolist()}
+        remote = self.base / "remote.zip"
+        with zipfile.ZipFile(remote, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            for name, data in members.items():
+                z.writestr(name, data)
+        class MdtmFTP(self._ReplaceFTP):
+            downloads = 0
+            def sendcmd(self, command): return "213 20261002120000"
+            def retrbinary(self, command, receive, blocksize=None):
+                type(self).downloads += 1
+                super().retrbinary(command, receive, blocksize)
+        MdtmFTP.files = {"have.zip": remote.read_bytes()}; MdtmFTP.log = []
+        config = {"mister": {"host": "example.test"}}
+        with mock.patch.object(a.ftplib, "FTP", MdtmFTP):
+            first = a.transfer(self.db, self.work, config, dry_run=False, skip_matching=True,
+                               require_mra_match=True, replace_different=True)
+            self.assertEqual(first["entries"][0]["action"], "already_satisfied")
+            self.assertEqual(MdtmFTP.downloads, 1)
+            second = a.transfer(self.db, self.work, config, dry_run=False, skip_matching=True,
+                                require_mra_match=True, replace_different=True)
+        self.assertEqual(second["entries"][0]["action"], "already_satisfied")
+        self.assertEqual(second["entries"][0]["match_source"], "send_cache")
+        self.assertEqual(MdtmFTP.downloads, 1)
+
     def test_send_still_holds_a_different_remote_zip_without_replace_permission(self):
         self._shared_zip_with_unfinished_alternative()
         fake = self._ReplaceFTP

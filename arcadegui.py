@@ -6,10 +6,10 @@ import json
 import re
 import sys
 
-from PyQt6.QtCore import QSettings, QThread, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFont, QFontDatabase
+from PyQt6.QtCore import QSettings, QThread, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QFont, QFontDatabase, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QApplication, QTreeWidgetItem, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QMenu, QTreeWidgetItem, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -91,6 +91,11 @@ class MainWindow(QMainWindow):
         self.resize(1440, 720)
         self.setMinimumSize(1160, 720)
         build_ui(self, WORK_DIR)
+        self.missing_roms.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.missing_roms.customContextMenuRequested.connect(self._missing_roms_menu)
+        self.missing_roms.setSelectionMode(self.missing_roms.SelectionMode.ExtendedSelection)
+        QShortcut(QKeySequence.StandardKey.Copy, self.missing_roms).activated.connect(
+            self._copy_missing_roms)
         self._load_settings()
         self._load_previous_report()
         self._retranslate_ui()
@@ -152,6 +157,49 @@ class MainWindow(QMainWindow):
         self._refresh_tabs()
         self._render_log()
         self._render_status()
+
+    def _missing_rom_lines(self, items=None, indent=False):
+        lines = []
+        def walk(item, depth):
+            lines.append(("  " * depth if indent else "") + item.text(0))
+            for index in range(item.childCount()):
+                walk(item.child(index), depth + 1)
+        tree = self.missing_roms
+        if items is None:
+            for index in range(tree.topLevelItemCount()):
+                walk(tree.topLevelItem(index), 0)
+        else:
+            selected = set(map(id, items))
+            def has_selected_ancestor(item):
+                parent = item.parent()
+                while parent is not None:
+                    if id(parent) in selected:
+                        return True
+                    parent = parent.parent()
+                return False
+            for item in items:
+                if not has_selected_ancestor(item):
+                    walk(item, 0)
+        return lines
+
+    def _copy_missing_roms(self, everything=False):
+        selected = self.missing_roms.selectedItems()
+        if everything or not selected:
+            lines = self._missing_rom_lines(indent=True)
+        else:
+            lines = self._missing_rom_lines(selected)
+        if lines:
+            QApplication.clipboard().setText("\n".join(lines))
+
+    def _missing_roms_menu(self, position):
+        menu = QMenu(self.missing_roms)
+        copy = menu.addAction(self._t("copy"))
+        copy.setEnabled(bool(self.missing_roms.selectedItems()))
+        copy.triggered.connect(lambda: self._copy_missing_roms())
+        copy_all = menu.addAction(self._t("copy_all"))
+        copy_all.setEnabled(self.missing_roms.topLevelItemCount() > 0)
+        copy_all.triggered.connect(lambda: self._copy_missing_roms(everything=True))
+        menu.exec(self.missing_roms.viewport().mapToGlobal(position))
 
     def _render_missing_roms(self):
         overview = arcadetool.missing_overview(WORK_DIR)
@@ -228,9 +276,10 @@ class MainWindow(QMainWindow):
         elif self._log_mode == "send" and self._last_result:
             entries = self._last_result[1]["entries"]
             sent = sum(e.get("action") in ("uploaded", "replaced") for e in entries)
-            matched = sum(e.get("action") == "already_present" for e in entries)
+            matched = sum(e.get("action") in ("already_present", "already_satisfied") for e in entries)
             conflicts = sum(e.get("action") == "conflict" for e in entries)
             labels = {"uploaded":"send_uploaded", "replaced":"send_replaced", "already_present":"send_present",
+                      "already_satisfied":"send_satisfied",
                       "conflict":"send_conflict"}
             self.log.setPlainText("\n".join(
                 [self._t("send_summary", sent=sent, matched=matched, conflicts=conflicts)] +

@@ -50,6 +50,12 @@ def _remember_send_cache(work, entries):
         _save_send_cache(work, entries)
 
 
+def _members_signature(members):
+    """Stable fingerprint of the ROM members a ZIP must contain."""
+    rows = sorted([m["name"], m["sha1"], m["crc32"], m["size"]] for m in members)
+    return hashlib.sha1(json.dumps(rows, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def _remote_mdtm(ftp, name):
     try:
         reply = ftp.sendcmd("MDTM " + name)
@@ -168,6 +174,7 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
     if t.get("protocol","ftp").lower() != "ftp":
         raise ValueError("only FTP is supported")
     entries=[]
+    member_needs = {}
     required, blocked, manifest_error = current_mra_requirements(db, work) if require_mra_match else ({}, {}, None)
     exclusions = current_mra_exclusions(work) if require_mra_match and manifest_error is None else {}
     for p in sorted((work/"out").rglob("*.zip")) if (work/"out").exists() else []:
@@ -193,8 +200,11 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
                     reason = f"current MRA mismatch: {exc}"
             if reason is not None:
                 entry.update({"collision":"local-mra-mismatch", "action":"conflict", "reason":reason})
-            elif exclusions.get(target):
-                entry["excluded_mras"] = exclusions[target]
+            else:
+                if exclusions.get(target):
+                    entry["excluded_mras"] = exclusions[target]
+                if required.get(target):
+                    member_needs[dest] = (required[target], _members_signature(required[target]))
         entries.append(entry)
     check_cancel(cancel_requested)
     if not entries:
@@ -226,27 +236,47 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
             temp=name+".uploading"
             cache_key = json.dumps([server, dest], ensure_ascii=False)
             if e["collision"]=="existing" and skip_matching:
-                if ftp.size(name)==e["size"]:
-                    remote_mdtm = _remote_mdtm(ftp, name)
-                    cached = cache.get(cache_key)
-                    if (remote_mdtm is not None and isinstance(cached, dict)
-                            and cached.get("mdtm") == remote_mdtm
-                            and cached.get("size") == e["size"]
-                            and cached.get("sha1") == e["sha1"]):
+                needed = member_needs.get(dest)
+                remote_size = ftp.size(name)
+                remote_mdtm = _remote_mdtm(ftp, name)
+                cached = cache.get(cache_key)
+                if (remote_mdtm is not None and isinstance(cached, dict)
+                        and cached.get("mdtm") == remote_mdtm and cached.get("size") == remote_size):
+                    if remote_size == e["size"] and cached.get("sha1") == e["sha1"]:
                         e["collision"]="matching"
                         e["match_source"]="send_cache"
+                    elif needed and cached.get("members") == needed[1]:
+                        e["collision"]="satisfied"
+                        e["match_source"]="send_cache"
+                if e["collision"] == "existing":
+                    if remote_size != e["size"] and not needed:
+                        e["collision"]="different"
                     else:
                         remote_hash=hashlib.sha1()
-                        def hash_remote(block):
-                            check_cancel(cancel_requested)
-                            remote_hash.update(block)
-                        ftp.retrbinary("RETR "+name,hash_remote,blocksize=CHUNK)
-                        e["collision"]="matching" if remote_hash.hexdigest()==e["sha1"] else "different"
-                        if (e["collision"] == "matching" and remote_mdtm is not None
+                        with tempfile.TemporaryFile(dir=work) as downloaded:
+                            def hash_remote(block):
+                                check_cancel(cancel_requested)
+                                remote_hash.update(block)
+                                downloaded.write(block)
+                            ftp.retrbinary("RETR "+name,hash_remote,blocksize=CHUNK)
+                            remote_sha1 = remote_hash.hexdigest()
+                            if remote_sha1 == e["sha1"]:
+                                e["collision"]="matching"
+                            elif needed:
+                                downloaded.seek(0)
+                                try:
+                                    verify_zip(downloaded, needed[0], cancel_requested)
+                                    e["collision"]="satisfied"
+                                except (ValueError, OSError, zipfile.BadZipFile):
+                                    e["collision"]="different"
+                            else:
+                                e["collision"]="different"
+                        if (e["collision"] in ("matching", "satisfied") and remote_mdtm is not None
                                 and _remote_mdtm(ftp, name) == remote_mdtm):
-                            cache[cache_key] = {"size":e["size"], "sha1":e["sha1"], "mdtm":remote_mdtm}
+                            cache[cache_key] = {"size":remote_size, "sha1":remote_sha1, "mdtm":remote_mdtm}
+                            if e["collision"] == "satisfied":
+                                cache[cache_key]["members"] = needed[1]
                             if not dry_run: _remember_send_cache(work, cache)
-                else: e["collision"]="different"
                 if e["collision"] == "different" and cache_key in cache:
                     del cache[cache_key]
                     if not dry_run: _remember_send_cache(work, cache)
@@ -256,6 +286,9 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
             if dry_run: continue
             if e["collision"]=="matching":
                 e["action"]="already_present"
+                continue
+            if e["collision"]=="satisfied":
+                e["action"]="already_satisfied"
                 continue
             if skip_matching and e["collision"]=="temporary-exists" or (
                     skip_matching and e["collision"]=="different" and not replacing):
