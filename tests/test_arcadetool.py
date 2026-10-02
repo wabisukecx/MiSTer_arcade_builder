@@ -732,6 +732,28 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(second["built"], [])
         self.assertEqual([Path(p).name for p in second["already_present"]], ["ready.zip"])
 
+    def test_output_compression_option_stored_default_and_deflate(self):
+        import arcade_build
+        payload = b"A" * 4096
+        self.zip("a", "ready.zip", {"x": payload})
+        self.mra("Ready.mra", f'<rom index="0" zip="ready.zip"><part name="x" crc="{crc(payload)}"/></rom>')
+        self.addCleanup(arcade_build.set_output_compression, "stored")
+        with self.assertRaises(ValueError):
+            arcade_build.set_output_compression("zstd")
+        arcade_build.set_output_compression("deflate")
+        a.build_ready(self.db, self.work)
+        path = self.work / "out" / "ready.zip"
+        with zipfile.ZipFile(path) as z:
+            info = z.getinfo("x")
+            self.assertEqual(info.compress_type, zipfile.ZIP_DEFLATED)
+            self.assertLess(info.compress_size, info.file_size)
+            self.assertEqual(z.read("x"), payload)
+        path.unlink()
+        arcade_build.set_output_compression(None)
+        a.build_ready(self.db, self.work)
+        with zipfile.ZipFile(path) as z:
+            self.assertEqual(z.getinfo("x").compress_type, zipfile.ZIP_STORED)
+
     def test_corrupt_existing_zip_is_rebuilt_with_backup(self):
         self.zip("a", "ready.zip", {"x": b"ready"})
         self.mra("Ready.mra", f'<rom index="0" zip="ready.zip"><part name="x" crc="{crc(b"ready")}"/></rom>')

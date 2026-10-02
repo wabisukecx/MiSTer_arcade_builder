@@ -53,6 +53,8 @@ ROM照合では取り込み済みZIPの出所情報から検索索引を一度�
 
 DATでBIOSと判定したZIPも、実際にその入力ZIPから読み出したBIOS部品だけを集約します。BIOS候補を含む検索指定だけを理由にゲームROMをBIOS ZIPへ入れることはありません。全出力ZIPは選択中のMRAが要求する部品の和集合として作り、CRCが異なる同名部品も保持します。MRAがCRCを指定しない場合、同名で内容が異なる部品は曖昧として扱います。置き換える既存ZIPは`.local-work\backups`に保存します。
 
+出力ZIPの圧縮は`config.json`の`"output": {"compression": "stored"}`で選びます。`stored`(既定)は無圧縮、`deflate`は圧縮します。`deflate`にするとZIPが小さくなり、転送量とMiSTer側の容量が減ります。変更が反映されるのは新しく作るZIPだけで、作成済みのZIPはそのまま再利用されます。既存ZIPも作り直したいときは、`.local-work/out`の該当ZIPを退避してからRunしてください。作り直したZIPはSHA-1が変わるため、次のSendで置換送信になります。GUIでは「出力ZIP」の「圧縮する」チェックボックスで同じ設定を切り替えます(既定はオフ=無圧縮。GUIの設定が優先されます)。
+
 ## 個別操作・調査
 
 コードは処理単位で分けています。`arcadetool.py`はCLIと一括実行、`arcade_mra.py`はMRA解析とFTP取得、`arcade_pool.py`はROMの登録と照合、`arcade_build.py`はZIP生成と検証、`arcade_reports.py`は不足レポート、`arcade_transfer.py`はFTP送信を担当します。GUIは`arcadegui.py`が動作を制御し、`gui_layout.py`が画面配置、`gui_i18n.py`が日本語・英語の表示文言を担当します。

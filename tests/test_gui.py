@@ -42,6 +42,7 @@ class GuiTests(unittest.TestCase):
                 self.assertIsNotNone(window.other_region_alternatives)
                 self.assertIsNotNone(window.version_alternatives)
                 self.assertIsNotNone(window.modified_alternatives)
+                self.assertFalse(window.compress_output.isChecked())
                 self.assertEqual(window.mame_dat.objectName(), "mame_dat")
                 self.assertEqual(window.content_row.indexOf(window.tabs.parentWidget()),1)
                 self.assertEqual(window.tabs.count(),4)

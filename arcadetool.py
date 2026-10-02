@@ -13,7 +13,7 @@ from arcade_mra import (FIXABLE, TAG, ALTERNATIVE_CATEGORIES, JAPAN_MARKER, MODI
                         connect, parse_tree, scan_mras, ftp_mra_files, sync_mras_ftp)
 from arcade_pool import (OriginIndex, ingest, part_rows, is_external, choices, rom_plan,
                          plans_for_mra, output_zip_for_part, status)
-from arcade_build import literal_bytes, assembled_md5, build, build_ready, verify_zip
+from arcade_build import literal_bytes, assembled_md5, build, build_ready, verify_zip, set_output_compression
 from arcade_bios import bios_zip_names
 from arcade_store import BlobStore, pack_pool, verify_pool, rebuild_index
 from arcade_reports import (list_mras, missing_report, format_missing_report,
@@ -38,6 +38,7 @@ def run_pipeline(db, work: Path, mra_root: Path, rom_roots: list[Path], config=N
         except OperationCancelled:
             manifest_path.unlink(missing_ok=True)
             raise
+    set_output_compression(((config or {}).get("output") or {}).get("compression"))
     categories = selected_categories(include_alternatives, alternative_categories)
     for root in rom_roots:
         if not root.exists() or not (root.is_dir() or root.suffix.lower() == ".zip"):
@@ -173,6 +174,7 @@ def main(argv=None):
     p.add_argument("--dry-run",action="store_true")
     args=parser.parse_args(argv)
     config=json.loads(args.config.read_text(encoding="utf-8")) if args.config else {}
+    set_output_compression((config.get("output") or {}).get("compression"))
     work=args.work
     if args.config and str(work)==".local-work": work=Path(config.get("work_dir",".local-work"))
     db=connect(work)

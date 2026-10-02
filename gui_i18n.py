@@ -19,6 +19,8 @@ TEXT = {
     "password": ("パスワード", "Password"),
     "mra_folder": ("MRAの保存先", "MRA folder"),
     "alternatives": ("代替MRA", "Alternative MRAs"),
+    "output_zip": ("出力ZIP", "Output ZIPs"),
+    "compress_output": ("圧縮する(既定は無圧縮)", "Compress (default: uncompressed)"),
     "rom_folder": ("元ROMのフォルダー", "Source ROM folder"),
     "output_folder": ("生成ZIPの保存先", "Output ZIP folder"),
     "japan": ("地域違い：日本版と判定されたもの", "Region: identified as Japan"),

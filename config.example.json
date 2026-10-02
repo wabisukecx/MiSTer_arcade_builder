@@ -12,5 +12,8 @@
     "rom_root": "/media/fat/games/mame",
     "hbmame_root": "/media/fat/games/hbmame",
     "sound_root": "/media/fat/_Arcade/sound"
+  },
+  "output": {
+    "compression": "stored"
   }
 }

@@ -140,6 +140,7 @@ class MainWindow(QMainWindow):
         self.other_region_alternatives.setText(self._t("other_region"))
         self.version_alternatives.setText(self._t("version"))
         self.modified_alternatives.setText(self._t("modified"))
+        self.compress_output.setText(self._t("compress_output"))
         self.open_out.setText(self._t("open"))
         for browse in self._browse_buttons:
             browse.setText(self._t("browse"))
@@ -358,6 +359,7 @@ class MainWindow(QMainWindow):
             ("modified_alternatives", self.modified_alternatives, False),
         ):
             widget.setChecked(self.settings.value(key, default, type=bool))
+        self.compress_output.setChecked(self.settings.value("compress_output", False, type=bool))
         self._load_password()
 
     def _load_password(self):
@@ -381,6 +383,7 @@ class MainWindow(QMainWindow):
             ("modified_alternatives", self.modified_alternatives),
         ):
             self.settings.setValue(key, widget.isChecked())
+        self.settings.setValue("compress_output", self.compress_output.isChecked())
         self.settings.setValue("language", self.language)
 
     def _alternative_categories(self) -> frozenset[str]:
@@ -470,6 +473,7 @@ class MainWindow(QMainWindow):
         self._save_password()
         config = {
             "mame_dat": dat_text,
+            "output": {"compression": "deflate" if self.compress_output.isChecked() else "stored"},
             "mister": {"host": host, "port": 21, "username": username,
                        "password": self.password.text(), "mra_root": MRA_REMOTE},
             "transfer": {"rom_root": ROM_REMOTE,

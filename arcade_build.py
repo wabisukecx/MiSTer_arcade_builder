@@ -15,6 +15,17 @@ from arcade_common import CHUNK, canonical_zip, check_cancel, digest_file, safe_
 from arcade_pool import OriginIndex, is_external, output_zip_for_part, part_rows, plans_for_mra
 from arcade_store import BlobStore
 
+_COMPRESSION = {"stored": zipfile.ZIP_STORED, "deflate": zipfile.ZIP_DEFLATED}
+_output_compression = zipfile.ZIP_STORED
+
+def set_output_compression(mode):
+    """Select how newly built output ZIPs are compressed ('stored' or 'deflate')."""
+    global _output_compression
+    mode = (mode or "stored")
+    if not isinstance(mode, str) or mode.lower() not in _COMPRESSION:
+        raise ValueError(f"output.compression must be 'stored' or 'deflate': {mode!r}")
+    _output_compression = _COMPRESSION[mode.lower()]
+
 def _member_items(members):
     """Normalize legacy name maps and duplicate-name-capable member lists."""
     if isinstance(members, dict):
@@ -79,7 +90,7 @@ def prepare_shared_bios(work, target, members, progress, cancel_requested=None, 
     fd, temporary = tempfile.mkstemp(prefix="bios-", suffix=".zip", dir=dest.parent)
     os.close(fd)
     try:
-        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as archive:
+        with zipfile.ZipFile(temporary, "w", compression=_output_compression) as archive:
             for item in sorted(members, key=lambda x: (x["name"].casefold(), x["crc32"], x["sha1"])):
                 check_cancel(cancel_requested)
                 with store.open(item["sha1"]) as source, archive.open(item["name"], "w") as output:
@@ -225,7 +236,7 @@ def _build(db, work, mra_name, skip_existing, plan_cache, cross_claims, progress
             progress(f"ZIP作成中: {target} ({mra['relative_path']})")
             fd,tmp = tempfile.mkstemp(prefix="build-",suffix=".zip",dir=dest.parent); os.close(fd)
             staged.append((Path(tmp),dest))
-            with zipfile.ZipFile(tmp,"w",compression=zipfile.ZIP_STORED) as z:
+            with zipfile.ZipFile(tmp,"w",compression=_output_compression) as z:
                 for item in sorted(_member_items(members), key=lambda x: (x["name"].casefold(), x["crc32"], x["sha1"])):
                     with store.open(item["sha1"]) as src,z.open(item["name"],"w") as dst:
                         while block := src.read(CHUNK):
