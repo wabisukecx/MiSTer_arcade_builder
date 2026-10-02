@@ -4,7 +4,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QPlainTextEdit, QProgressBar, QPushButton,
-    QTabWidget, QVBoxLayout, QWidget,
+    QTabWidget, QTreeWidget, QVBoxLayout, QWidget,
 )
 
 def build_ui(self, work_dir: Path):
@@ -155,12 +155,17 @@ def build_ui(self, work_dir: Path):
     self.new_zips.setObjectName("new_zips")
     self.missing_zips = QListWidget()
     self.missing_zips.setObjectName("missing_zips")
+    self.missing_roms = QTreeWidget()
+    self.missing_roms.setObjectName("missing_roms")
+    self.missing_roms.setColumnCount(2)
+    self.missing_roms.setUniformRowHeights(True)
     self.alternative_list = QListWidget()
     self.alternative_list.setObjectName("alternative_list")
     self.tabs.addTab(self.log, self._t("tab_log"))
     self.tabs.addTab(self.new_zips, self._t("tab_new", count=0))
     self.tabs.addTab(self.missing_zips, self._t("tab_missing", count=0))
     self.tabs.addTab(self.alternative_list, self._t("tab_alternative", count=0))
+    self.tabs.addTab(self.missing_roms, self._t("tab_missing_roms", count=0))
     result_layout.addWidget(self.tabs, 1)
 
     self.setStyleSheet("""

@@ -9,7 +9,7 @@ import sys
 from PyQt6.QtCore import QSettings, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QFont, QFontDatabase
 from PyQt6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QTreeWidgetItem, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -148,16 +148,37 @@ class MainWindow(QMainWindow):
         self.send_button.setText(self._t("send"))
         self.cancel_button.setText(self._t("cancel"))
         self._render_alternative_list()
+        self._render_missing_roms()
         self._refresh_tabs()
         self._render_log()
         self._render_status()
+
+    def _render_missing_roms(self):
+        overview = arcadetool.missing_overview(WORK_DIR)
+        tree = self.missing_roms
+        tree.clear()
+        tree.setHeaderLabels([self._t("col_missing_zip"), self._t("col_missing_state")])
+        for zip_info in overview["zips"]:
+            top = QTreeWidgetItem([zip_info["zip"], self._t("state_partial" if zip_info["built"]
+                                                              else "state_unbuilt")])
+            tree.addTopLevelItem(top)
+            for mra in zip_info["mras"]:
+                child = QTreeWidgetItem([mra["mra"], self._t("state_mra_missing",
+                                                              count=len(mra["missing"]))])
+                top.addChild(child)
+                for part in mra["missing"]:
+                    child.addChild(QTreeWidgetItem([part, ""]))
+        tree.expandToDepth(1)
+        tree.resizeColumnToContents(1)
 
     def _refresh_tabs(self):
         self.tabs.setTabText(0, self._t("tab_log"))
         self.tabs.setTabText(1, self._t("tab_new", count=self.new_zips.count()))
         self.tabs.setTabText(2, self._t("tab_missing", count=self.missing_zips.count()))
         self.tabs.setTabText(3, self._t("tab_alternative", count=self.alternative_list.count()))
-        for index, key in ((1, "tip_new"), (2, "tip_missing"), (3, "tip_alternative")):
+        self.tabs.setTabText(4, self._t("tab_missing_roms", count=self.missing_roms.topLevelItemCount()))
+        for index, key in ((1, "tip_new"), (2, "tip_missing"), (3, "tip_alternative"),
+                           (4, "tip_missing_roms")):
             self.tabs.setTabToolTip(index, self._t(key))
 
     def _translate_progress(self, raw: str) -> str:
@@ -412,6 +433,7 @@ class MainWindow(QMainWindow):
             self._run_log_raw = path.read_text(encoding="utf-8")
             self._log_mode = "run"
         self._load_alternative_report()
+        self._render_missing_roms()
         self._refresh_tabs()
         self._render_log()
 
@@ -487,6 +509,7 @@ class MainWindow(QMainWindow):
         if operation == "run":
             self.new_zips.clear()
             self.missing_zips.clear()
+            self.missing_roms.clear()
             self._refresh_tabs()
         self.tabs.setCurrentIndex(0)
         self._append_log("MRAとROMの確認を開始しました" if operation == "run" else "MiSTerへ送信しています")
@@ -532,6 +555,7 @@ class MainWindow(QMainWindow):
             missing = Path(result["missing_output_zip_list"]).read_text(encoding="utf-8").splitlines()
             self.missing_zips.clear()
             self.missing_zips.addItems(missing)
+            self._render_missing_roms()
         else:
             self._log_mode = "send"
         self._last_result = (operation, result)

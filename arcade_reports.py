@@ -1,6 +1,7 @@
 """Catalog and missing-ROM reports."""
 from __future__ import annotations
 from collections import Counter
+import json
 from pathlib import Path
 import re
 import zipfile
@@ -268,3 +269,25 @@ def format_missing_output_causes(causes, diagnostics=None):
             if len(diagnostic["variants"]) > 1:
                 lines.append("  Note: Required member sets vary by MRA; one ZIP can satisfy them when it contains every required CRC/content variant.")
     return "\n".join(lines) + "\n"
+
+def missing_overview(work: Path):
+    """Group the ROMs missing from the latest Run by output ZIP, then by MRA.
+
+    Reads send-manifest.json, which Run rewrites.  A ZIP is "built" when at least one
+    MRA that needs it is complete; the excluded MRAs are the ones still missing parts.
+    """
+    try:
+        manifest = json.loads((work / "send-manifest.json").read_text(encoding="utf-8-sig"))
+        excluded = manifest.get("excluded") or {}
+        required = manifest.get("required") or {}
+    except (OSError, ValueError, AttributeError):
+        return {"zips": [], "mra_count": 0, "part_count": 0}
+    zips = []
+    for target, items in excluded.items():
+        mras = [{"mra": item["mra"], "missing": list(item["missing"])} for item in items]
+        zips.append({"zip": target, "built": target in required,
+                     "mras": sorted(mras, key=lambda x: x["mra"].casefold())})
+    zips.sort(key=lambda x: (x["built"], x["zip"].casefold()))
+    return {"zips": zips,
+            "mra_count": sum(len(z["mras"]) for z in zips),
+            "part_count": sum(len(m["missing"]) for z in zips for m in z["mras"])}

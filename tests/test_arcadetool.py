@@ -754,6 +754,24 @@ class BuilderTests(unittest.TestCase):
         with zipfile.ZipFile(path) as z:
             self.assertEqual(z.getinfo("x").compress_type, zipfile.ZIP_STORED)
 
+    def test_missing_overview_groups_missing_parts_by_zip_and_mra(self):
+        self.assertEqual(a.missing_overview(self.work)["zips"], [])
+        self.work.mkdir(exist_ok=True)
+        (self.work / "send-manifest.json").write_text(json.dumps({
+            "required": {"built.zip": []},
+            "excluded": {
+                "built.zip": [{"mra": "_alternatives/Alt.mra", "missing": ["b.rom (CRC 22222222)"]}],
+                "absent.zip": [{"mra": "Zed.mra", "missing": ["z.rom (CRC 33333333)", "y.rom"]},
+                               {"mra": "Abe.mra", "missing": ["a.rom (CRC 11111111)"]}]}}),
+            encoding="utf-8")
+        overview = a.missing_overview(self.work)
+        self.assertEqual([(z["zip"], z["built"]) for z in overview["zips"]],
+                         [("absent.zip", False), ("built.zip", True)])
+        self.assertEqual([m["mra"] for m in overview["zips"][0]["mras"]], ["Abe.mra", "Zed.mra"])
+        self.assertEqual((overview["mra_count"], overview["part_count"]), (3, 4))
+        (self.work / "send-manifest.json").write_text("not json", encoding="utf-8")
+        self.assertEqual(a.missing_overview(self.work)["zips"], [])
+
     def test_corrupt_existing_zip_is_rebuilt_with_backup(self):
         self.zip("a", "ready.zip", {"x": b"ready"})
         self.mra("Ready.mra", f'<rom index="0" zip="ready.zip"><part name="x" crc="{crc(b"ready")}"/></rom>')
