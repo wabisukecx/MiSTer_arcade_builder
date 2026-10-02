@@ -1,0 +1,16 @@
+{
+  "work_dir": ".local-work",
+  "mame_dat": "",
+  "mister": {
+    "host": "",
+    "port": 21,
+    "username": "root",
+    "password_env": "MISTER_FTP_PASSWORD",
+    "mra_root": "/media/fat/_Arcade"
+  },
+  "transfer": {
+    "rom_root": "/media/fat/games/mame",
+    "hbmame_root": "/media/fat/games/hbmame",
+    "sound_root": "/media/fat/_Arcade/sound"
+  }
+}

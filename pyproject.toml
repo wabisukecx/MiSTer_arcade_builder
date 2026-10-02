@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mister-arcade-auto-setup"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Bilingual MiSTer arcade ROM ZIP setup from MRA files"
+
+[project.optional-dependencies]
+gui = ["PyQt6>=6.11,<7", "keyring>=25,<26"]
+
+[project.scripts]
+arcadetool = "arcadetool:main"
+arcadegui = "arcadegui:main"
+
+[tool.setuptools]
+py-modules = [
+  "arcadetool", "arcade_common", "arcade_mra", "arcade_pool",
+  "arcade_build", "arcade_reports", "arcade_transfer",
+  "arcadegui", "gui_i18n", "gui_layout",
+]

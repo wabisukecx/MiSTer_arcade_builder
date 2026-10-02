@@ -1,0 +1,33 @@
+.local-work/
+local-data/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Local connection settings and generated reports
+config*.json
+!config.example.json
+*.local.json
+.env
+.env.*
+
+# User-supplied game data and core files
+*.zip
+*.7z
+*.chd
+*.dlv
+*.mra
+*.rbf
+*.db
+*.sqlite
+*.sqlite3
+pool/
+out/
+missing-report.json
+alternative-selection-report.json
+dry.json
