@@ -45,7 +45,9 @@ python arcadetool.py --config config.json send
 
 `run`はFTPから変更されたMRAの取得、MRA解析、ZIP内のROM登録、MRAとの照合、完成可能なタイトルのZIP生成・検証を順に行います。CLIでは標準MRAのみが初期設定です。`--japan-alternatives`、`--other-region-alternatives`、`--version-alternatives`、`--modified-alternatives`を組み合わせられます。`--include-alternatives`は従来どおり分類不能なものも含む全代替MRAです。FTP未設定・接続不可の場合はMRA取得を飛ばし、保存済みMRAで処理を続けます。保存済みMRAもない場合は停止します。`send`は別操作で、出力ZIPをMiSTerへ送ります。送信前に、最新の`run`で記録したMRA要求と`out`の各ZIPの部品名・SHA-1・CRC32・サイズを再照合します。MRA変更後に`run`していない場合や、要求と一致しないZIPは`out`に残して送信を保留します。同名の転送先ZIPはSHA-1まで照合し、一致すれば再送を省略します。内容が異なるZIPは上書きせず保留し、ほかのZIPの送信は続けます。検証済みの送信先ZIPのSHA-1・サイズ・FTP更新時刻は`.local-work/send-cache.json`に記録します。次回Sendでこの3項目が一致すればMiSTerからZIP全体を読み戻さず、変更があれば再照合します。FTPサーバーが`MDTM`に対応しない場合は従来どおり全体を読み戻して照合します。
 
-ROM照合では取り込み済みZIPの出所情報から検索索引を一度だけ作り、MRAのZIP候補名とCRC、または部品名で検索します。各部品のたびにプール全体を走査しません。不足一覧に必要なため、未完成のMRAでも残りの部品を確認します。初回取り込みではZIPを展開してSHA-1とCRC32を計算し、ROMの実体をプールへ書き込みます。DBへの登録は部品ごとではなくZIP単位で確定します。中止時は処理中のZIPのDB更新を戻し、完成済みのZIPの記録を保持します。
+ROMが一部足りないMRA(代替MRAなど)は、そのMRAだけを除外して、完成しているMRAのぶんでZIPを作って送ります。除外したMRAと不足ROM(部品名・CRC)はSendの結果に表示し、`send-manifest.json`の`excluded`にも記録します。後からRunで不足ROMがプールに加わると、ZIPが再生成され、次のSendで送信先の同名ZIPを置き換えます。置き換えは、現在のMRAと一致すると検証済みのZIPに限り、一時名でアップロードして検証したあと、旧ZIPを`.replaced`へ退避して入れ替えます。失敗時は旧ZIPへ戻します。
+
+ROM照合では取り込み済みZIPの出所情報から検索索引を一度だけ作り、MRAのZIP候補名とCRC、または部品名で検索します。各部品のたびにプール全体を走査しません。不足一覧に必要なため、未完成のMRAでも残りの部品を確認します。初回取り込みではZIPを展開してSHA-1とCRC32を計算し、ROMの実体をプールへ書き込みます。新規ROMは入力ZIPごとに1つのパックZIP(`.local-work\\pool\\packs\\<id>.zip`)へ、SHA-1名のメンバーとして圧縮保存します。各パックには`manifest.json`(収録ROMと出所)が入り、DBが失われても`rebuild-index`で復元できます。旧形式のばらファイル(`pool\\xx\\<sha1>`)も読み込めます。DBへの登録は部品ごとではなくZIP単位で確定します。中止時は処理中のZIPのDB更新を戻し、完成済みのZIPの記録を保持します。
 
 生成ZIPは`.local-work\out`、不足ROMレポートは`.local-work\missing-report.json`、未登録ZIP候補一覧は`.local-work\missing-zips.txt`に保存します。`A.zip|B.zip`のような候補は左から検索しますが、出力先は実際に部品が見つかった入力ZIP名です。BIOS候補の後にゲームZIPが指定され、部品がゲームZIPから見つかった場合はゲームZIPへ出力します。`.local-work\missing-out-zips.txt`には、部品の出所に基づく出力ZIP名のうち未作成の名前を記録します。`.local-work\missing-out-causes.txt`には未生成ZIPごとに、ROM部品不足、照合の曖昧さ、生成エラーなどの原因と該当MRAをRunごとに記録します。既存の通常ROM ZIPは、必要な各部品がCRCと内容で含まれるかを調べ、余分な部品を許容します。DATでBIOSと判定したZIPはBIOS部品の構成と照合し、余分な部品があればバックアップ後に再構成します。同じ名前でもMRAが異なるCRCを要求するROMは、ZIP内に各CRCの部品を収録できます。`.local-work\run-log.txt`にも未生成ZIPの原因、新規生成ZIP名、既存ZIPの再利用数を記録します。変更のない入力ZIPは再展開せず、既存の生成ZIPは必要な部品をすべて含む場合に再利用します。ZIPに不足や不一致がある場合は結果の`rejected`または`errors`を確認してください。
 
@@ -67,6 +69,10 @@ python arcadetool.py missing --report .local-work\missing-report.json --zip --ou
 python arcadetool.py build 'Astra SuperStars (J 980514 V1.002).mra'
 python arcadetool.py build
 python arcadetool.py verify .local-work\out\astrass.zip
+python arcadetool.py pack-pool --dry-run
+python arcadetool.py pack-pool
+python arcadetool.py verify-pool
+python arcadetool.py rebuild-index
 python arcadetool.py --config config.json transfer --dry-run
 python -m unittest discover -s tests -v
 ```
@@ -86,3 +92,9 @@ python -m unittest discover -s tests -v
 ## 公開時の注意
 
 ローカルの`config.json`、`local-data/`、`.local-work/`、ROM・MRA・CHDなどは`.gitignore`で除外しています。公開前には`git status --short`と`git ls-files`で、意図しないファイルが含まれていないことを確認してください。FTPは通信を暗号化しないため、信頼できるローカルネットワークで使用してください。
+
+## プールのパック化(既存プールの移行)
+
+`pack-pool`は旧形式のばらファイルをパックZIPへ移します。パックごとに「ハッシュ確認→パック書き込み→パックを読み直して検証→DB更新」を済ませてから、ばらファイルを削除します。壊れた・欠けたばらファイルはパックに入れず、削除せず報告します。`--dry-run`は計画のみ、`--keep-loose`はばらファイルを残します。`verify-pool`はDB上の全ROMを読み戻して確認します(`--quick`はSHA-1再計算を省略)。問題があれば内容を表示して終了コード1で終わります。`rebuild-index`はパックの`manifest.json`からblobs・origins・パック対応表を復元します。
+
+推奨手順(Windows): ①`.local-work\arcade.db`を別の場所へコピーしてバックアップ、②`pack-pool --dry-run`で件数確認、③`pack-pool`、④`verify-pool`、⑤`run`でZIP生成が従来どおり動くことを確認。中断しても、完了済みのパックは有効で、再実行すると残りから再開します。

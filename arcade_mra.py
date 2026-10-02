@@ -99,6 +99,7 @@ def connect(work: Path) -> sqlite3.Connection:
       ordinal INTEGER, tag TEXT, attrs TEXT, text_data TEXT, parent_ordinal INTEGER,
       PRIMARY KEY(rom_id,ordinal));
     CREATE TABLE IF NOT EXISTS blobs(sha1 TEXT PRIMARY KEY, size INTEGER, crc32 TEXT);
+    CREATE TABLE IF NOT EXISTS blob_packs(sha1 TEXT PRIMARY KEY, pack TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS origins(id INTEGER PRIMARY KEY, archive TEXT, member TEXT, sha1 TEXT REFERENCES blobs(sha1),
       size INTEGER, crc32 TEXT, UNIQUE(archive,member,sha1));
     CREATE TABLE IF NOT EXISTS ingested_archives(path TEXT PRIMARY KEY, size INTEGER, mtime_ns INTEGER);

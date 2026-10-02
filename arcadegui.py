@@ -58,6 +58,7 @@ class WorkThread(QThread):
                 result = arcadetool.transfer(db, WORK_DIR, self.config,
                                              dry_run=False, skip_matching=True,
                                              require_mra_match=True,
+                                             replace_different=True,
                                              cancel_requested=self.isInterruptionRequested,
                                              progress=self.message.emit)
             self.result.emit(result)
@@ -204,21 +205,28 @@ class MainWindow(QMainWindow):
             self.log.setPlainText("\n".join(lines))
         elif self._log_mode == "send" and self._last_result:
             entries = self._last_result[1]["entries"]
-            sent = sum(e.get("action") == "uploaded" for e in entries)
+            sent = sum(e.get("action") in ("uploaded", "replaced") for e in entries)
             matched = sum(e.get("action") == "already_present" for e in entries)
             conflicts = sum(e.get("action") == "conflict" for e in entries)
-            labels = {"uploaded":"send_uploaded", "already_present":"send_present",
+            labels = {"uploaded":"send_uploaded", "replaced":"send_replaced", "already_present":"send_present",
                       "conflict":"send_conflict"}
             self.log.setPlainText("\n".join(
                 [self._t("send_summary", sent=sent, matched=matched, conflicts=conflicts)] +
                 [f"{self._t('send_local_mra_mismatch' if e.get('collision') == 'local-mra-mismatch' else labels.get(e.get('action'), 'send_check'))}  {e['destination']}"
                  + (f" — {e['reason']}" if e.get("reason") else "")
                  + self._held_cleanup_text(e.get("cleanup"))
+                 + self._excluded_text(e.get("excluded_mras"))
                  for e in entries]
             ))
         else:
             self.log.setPlainText("\n".join(self._translate_progress(raw)
                                             for raw in self._progress_messages))
+
+    def _excluded_text(self, excluded):
+        if not excluded:
+            return ""
+        head = "\n    除外MRA(ROM不足): " if self.language == "ja" else "\n    Excluded MRAs (missing ROMs): "
+        return head + "; ".join(f"{item['mra']} / {', '.join(item['missing'])}" for item in excluded)
 
     def _held_cleanup_text(self, cleanup):
         if not cleanup:

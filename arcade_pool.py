@@ -10,89 +10,115 @@ import tempfile
 import zipfile
 import zlib
 from arcade_common import CHUNK, MAX_MEMBER, OperationCancelled, canonical_zip, check_cancel, safe_name
+from arcade_store import BlobStore, PackWriteError, PackWriter
 
 def ingest(db, work: Path, roots: list[Path], skip_unchanged=False, progress=None,
-           cancel_requested=None):
+           cancel_requested=None, storage="pack"):
+    """Import ROM ZIPs into the pool.
+
+    ``storage="pack"`` (default) stores each archive's new content in one pack ZIP
+    plus a manifest; ``"loose"`` keeps the original one-file-per-blob layout.
+    """
+    if storage not in ("pack", "loose"):
+        raise ValueError(f"unknown pool storage: {storage}")
     progress = progress or (lambda message: None)
     archives = sorted({p.resolve() for root in roots for p in (root.rglob("*") if root.is_dir() else [root]) if p.is_file()})
     result = {"archives": 0, "skipped_unchanged": 0, "members": 0, "new_blobs": 0, "duplicate_content": 0, "rejected": [], "unsupported_7z": []}
     pool = work / "pool"
     pool.mkdir(parents=True, exist_ok=True)
-    for index, archive in enumerate(archives, 1):
-        check_cancel(cancel_requested)
-        if index == 1 or index % 50 == 0 or index == len(archives):
-            progress(f"ROM ZIP取込中 ({index}/{len(archives)}): {archive.name}")
-        if archive.suffix.lower() == ".7z":
-            result["unsupported_7z"].append(str(archive)); continue
-        if archive.suffix.lower() != ".zip": continue
-        stat = archive.stat()
-        previous = db.execute("SELECT size,mtime_ns FROM ingested_archives WHERE path=?",(str(archive),)).fetchone()
-        if skip_unchanged and previous and (previous["size"],previous["mtime_ns"]) == (stat.st_size,stat.st_mtime_ns):
-            result["skipped_unchanged"] += 1
-            continue
-        result["archives"] += 1
-        rejected_before = len(result["rejected"])
-        counts_before = {key: result[key] for key in ("members", "new_blobs", "duplicate_content")}
-        new_paths = []
-        try:
-            with db:
-                db.execute("DELETE FROM origins WHERE archive=?",(str(archive),))
-                db.execute("DELETE FROM ingested_archives WHERE path=?",(str(archive),))
-                with zipfile.ZipFile(archive) as z:
-                    seen = set()
-                    for info in z.infolist():
-                        check_cancel(cancel_requested)
-                        if info.is_dir(): continue
-                        name = info.filename
-                        if not safe_name(name) or name in seen or info.file_size > MAX_MEMBER:
-                            result["rejected"].append(f"{archive}:{name}: unsafe/duplicate/oversized"); continue
-                        seen.add(name)
-                        h = hashlib.sha1(); crc = 0; size = 0
-                        fd, tmp_name = tempfile.mkstemp(prefix="ingest-", dir=pool)
-                        try:
-                            with os.fdopen(fd,"wb") as out, z.open(info) as src:
-                                while block := src.read(CHUNK):
-                                    check_cancel(cancel_requested)
-                                    size += len(block)
-                                    if size > MAX_MEMBER: raise ValueError("expanded member too large")
-                                    h.update(block); crc = zlib.crc32(block,crc); out.write(block)
-                            sha = h.hexdigest(); crc_text = f"{crc & 0xffffffff:08x}"
-                            dest = pool / sha[:2] / sha
-                            dest.parent.mkdir(exist_ok=True)
-                            if not dest.exists():
-                                os.replace(tmp_name,dest)
-                                new_paths.append(dest)
-                                result["new_blobs"] += 1
-                            else:
-                                result["duplicate_content"] += 1
-                            db.execute("INSERT OR IGNORE INTO blobs VALUES(?,?,?)", (sha,size,crc_text))
-                            db.execute("INSERT OR IGNORE INTO origins(archive,member,sha1,size,crc32) VALUES(?,?,?,?,?)",
-                                       (str(archive),name,sha,size,crc_text))
-                            result["members"] += 1
-                        except OperationCancelled:
-                            raise
-                        except sqlite3.Error:
-                            raise
-                        except Exception as exc:
-                            result["rejected"].append(f"{archive}:{name}: {exc}")
-                        finally:
-                            if os.path.exists(tmp_name): os.unlink(tmp_name)
-                if len(result["rejected"]) == rejected_before:
-                    db.execute("INSERT OR REPLACE INTO ingested_archives VALUES(?,?,?)",
-                               (str(archive),stat.st_size,stat.st_mtime_ns))
-        except OperationCancelled:
-            for path in new_paths:
-                with contextlib.suppress(OSError): path.unlink()
-            raise
-        except (zipfile.BadZipFile, OSError) as exc:
-            for path in new_paths:
-                with contextlib.suppress(OSError): path.unlink()
-            result.update(counts_before)
-            result["rejected"].append(f"{archive}: {exc}")
-        except Exception:
-            for path in new_paths:
-                with contextlib.suppress(OSError): path.unlink()
-            raise
+    with BlobStore(db, work) as store:
+        for index, archive in enumerate(archives, 1):
+            check_cancel(cancel_requested)
+            if index == 1 or index % 50 == 0 or index == len(archives):
+                progress(f"ROM ZIP取込中 ({index}/{len(archives)}): {archive.name}")
+            if archive.suffix.lower() == ".7z":
+                result["unsupported_7z"].append(str(archive)); continue
+            if archive.suffix.lower() != ".zip": continue
+            stat = archive.stat()
+            previous = db.execute("SELECT size,mtime_ns FROM ingested_archives WHERE path=?",(str(archive),)).fetchone()
+            if skip_unchanged and previous and (previous["size"],previous["mtime_ns"]) == (stat.st_size,stat.st_mtime_ns):
+                result["skipped_unchanged"] += 1
+                continue
+            result["archives"] += 1
+            rejected_before = len(result["rejected"])
+            counts_before = {key: result[key] for key in ("members", "new_blobs", "duplicate_content")}
+            new_paths = []
+            writer = None
+            def discard_new_content():
+                for path in new_paths:
+                    with contextlib.suppress(OSError): path.unlink()
+                if writer is not None:
+                    writer.abort()
+            try:
+                with db:
+                    db.execute("DELETE FROM origins WHERE archive=?",(str(archive),))
+                    db.execute("DELETE FROM ingested_archives WHERE path=?",(str(archive),))
+                    origins = []
+                    pending = set()
+                    with zipfile.ZipFile(archive) as z:
+                        seen = set()
+                        for info in z.infolist():
+                            check_cancel(cancel_requested)
+                            if info.is_dir(): continue
+                            name = info.filename
+                            if not safe_name(name) or name in seen or info.file_size > MAX_MEMBER:
+                                result["rejected"].append(f"{archive}:{name}: unsafe/duplicate/oversized"); continue
+                            seen.add(name)
+                            h = hashlib.sha1(); crc = 0; size = 0
+                            fd, tmp_name = tempfile.mkstemp(prefix="ingest-", dir=pool)
+                            try:
+                                with os.fdopen(fd,"wb") as out, z.open(info) as src:
+                                    while block := src.read(CHUNK):
+                                        check_cancel(cancel_requested)
+                                        size += len(block)
+                                        if size > MAX_MEMBER: raise ValueError("expanded member too large")
+                                        h.update(block); crc = zlib.crc32(block,crc); out.write(block)
+                                sha = h.hexdigest(); crc_text = f"{crc & 0xffffffff:08x}"
+                                if sha in pending or store.has(sha):
+                                    result["duplicate_content"] += 1
+                                elif storage == "loose":
+                                    dest = pool / sha[:2] / sha
+                                    dest.parent.mkdir(exist_ok=True)
+                                    os.replace(tmp_name,dest)
+                                    new_paths.append(dest)
+                                    result["new_blobs"] += 1
+                                else:
+                                    if writer is None: writer = PackWriter(pool)
+                                    writer.add(sha, Path(tmp_name), size, crc_text, cancel_requested)
+                                    pending.add(sha)
+                                    db.execute("INSERT OR REPLACE INTO blob_packs(sha1,pack) VALUES(?,?)",(sha,writer.name))
+                                    result["new_blobs"] += 1
+                                db.execute("INSERT OR IGNORE INTO blobs VALUES(?,?,?)", (sha,size,crc_text))
+                                db.execute("INSERT OR IGNORE INTO origins(archive,member,sha1,size,crc32) VALUES(?,?,?,?,?)",
+                                           (str(archive),name,sha,size,crc_text))
+                                origins.append({"archive":str(archive),"member":name,"sha1":sha,"size":size,"crc32":crc_text})
+                                result["members"] += 1
+                            except OperationCancelled:
+                                raise
+                            except sqlite3.Error:
+                                raise
+                            except PackWriteError:
+                                raise
+                            except Exception as exc:
+                                result["rejected"].append(f"{archive}:{name}: {exc}")
+                            finally:
+                                if os.path.exists(tmp_name): os.unlink(tmp_name)
+                    if storage == "pack" and (writer is not None or origins):
+                        if writer is None: writer = PackWriter(pool)
+                        writer.finish(origins)
+                    if len(result["rejected"]) == rejected_before:
+                        db.execute("INSERT OR REPLACE INTO ingested_archives VALUES(?,?,?)",
+                                   (str(archive),stat.st_size,stat.st_mtime_ns))
+            except OperationCancelled:
+                discard_new_content()
+                raise
+            except (zipfile.BadZipFile, OSError) as exc:
+                discard_new_content()
+                result.update(counts_before)
+                result["rejected"].append(f"{archive}: {exc}")
+            except Exception:
+                discard_new_content()
+                raise
     return result
 
 def part_rows(db, rid):

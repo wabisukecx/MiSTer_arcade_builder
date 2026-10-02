@@ -13,6 +13,7 @@ import zipfile
 import zlib
 from arcade_common import CHUNK, canonical_zip, check_cancel, digest_file, safe_name
 from arcade_pool import OriginIndex, is_external, output_zip_for_part, part_rows, plans_for_mra
+from arcade_store import BlobStore
 
 def _member_items(members):
     """Normalize legacy name maps and duplicate-name-capable member lists."""
@@ -57,8 +58,11 @@ def shared_bios_members(db, mras, plan_cache, bios_zips=None):
     return {name: [item for variants in content.values() for item in variants.values()]
             for name, content in members.items() if content and name not in errors}, errors
 
-def prepare_shared_bios(work, target, members, progress, cancel_requested=None, exact=False):
+def prepare_shared_bios(work, target, members, progress, cancel_requested=None, exact=False, store=None):
     """Write a verified ROM union, preserving replaced output as a backup."""
+    if store is None:
+        with BlobStore(None, work) as own_store:
+            return prepare_shared_bios(work, target, members, progress, cancel_requested, exact, own_store)
     members = _member_items(members)
     if not safe_name(target):
         raise ValueError("unsafe ZIP output path")
@@ -69,7 +73,7 @@ def prepare_shared_bios(work, target, members, progress, cancel_requested=None, 
         try:
             verify_zip(dest, members, cancel_requested, exact=exact)
             return "already_present", str(dest)
-        except ValueError:
+        except (ValueError, zipfile.BadZipFile):
             pass
     progress(f"ZIP作成中: {target} (MRA ROM union)")
     fd, temporary = tempfile.mkstemp(prefix="bios-", suffix=".zip", dir=dest.parent)
@@ -78,11 +82,11 @@ def prepare_shared_bios(work, target, members, progress, cancel_requested=None, 
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as archive:
             for item in sorted(members, key=lambda x: (x["name"].casefold(), x["crc32"], x["sha1"])):
                 check_cancel(cancel_requested)
-                pool = work / "pool" / item["sha1"][:2] / item["sha1"]
-                with pool.open("rb") as source, archive.open(item["name"], "w") as output:
+                with store.open(item["sha1"]) as source, archive.open(item["name"], "w") as output:
                     while block := source.read(CHUNK):
                         check_cancel(cancel_requested)
                         output.write(block)
+        progress(f"ZIP検証中: {target} (MRA ROM union)")
         verify_zip(Path(temporary), members, cancel_requested, exact=True)
         check_cancel(cancel_requested)
         if dest.exists():
@@ -113,7 +117,10 @@ def literal_bytes(part):
     repeat = json.loads(part["attrs"]).get("repeat")
     return raw * (int(repeat,0) if repeat else 1)
 
-def assembled_md5(db, work, rom_id, plan, cancel_requested=None):
+def assembled_md5(db, work, rom_id, plan, cancel_requested=None, store=None):
+    if store is None:
+        with BlobStore(db, work) as own_store:
+            return assembled_md5(db, work, rom_id, plan, cancel_requested, own_store)
     expected = plan["md5_expected"]
     if not expected or expected.lower() == "none": return "disabled",None
     parts = part_rows(db,rom_id)
@@ -129,7 +136,7 @@ def assembled_md5(db, work, rom_id, plan, cancel_requested=None):
             offset = int(attrs.get("offset","0"),0)
             length = int(attrs["length"],0) if attrs.get("length") else None
             repeat = int(attrs.get("repeat","1"),0)
-            with (work/"pool"/item["sha1"][:2]/item["sha1"]).open("rb") as f:
+            with store.open(item["sha1"]) as f:
                 for _ in range(repeat):
                     f.seek(offset)
                     remaining = length
@@ -145,7 +152,16 @@ def assembled_md5(db, work, rom_id, plan, cancel_requested=None):
 
 def build(db, work, mra_name, skip_existing=False, plan_cache=None, cross_claims=None,
           progress=None, cancel_requested=None, origin_index=None,
-          shared_outputs=None, shared_errors=None):
+          shared_outputs=None, shared_errors=None, store=None):
+    if store is None:
+        with BlobStore(db, work) as own_store:
+            return build(db, work, mra_name, skip_existing, plan_cache, cross_claims, progress,
+                         cancel_requested, origin_index, shared_outputs, shared_errors, own_store)
+    return _build(db, work, mra_name, skip_existing, plan_cache, cross_claims, progress,
+                  cancel_requested, origin_index, shared_outputs, shared_errors, store)
+
+def _build(db, work, mra_name, skip_existing, plan_cache, cross_claims, progress,
+           cancel_requested, origin_index, shared_outputs, shared_errors, store):
     progress = progress or (lambda message: None)
     check_cancel(cancel_requested)
     rows = db.execute("SELECT * FROM mras WHERE relative_path=? OR title=? OR setname=? OR relative_path LIKE ?",
@@ -179,7 +195,7 @@ def build(db, work, mra_name, skip_existing=False, plan_cache=None, cross_claims
     # A real MRA MD5 mismatch means the chosen bytes are wrong. Leave no completed ZIP.
     progress(f"MRAのハッシュ検証中: {mra['relative_path']}")
     for p in ready:
-        p["md5_status"],p["md5_actual"] = assembled_md5(db,work,p["rom_id"],p,cancel_requested)
+        p["md5_status"],p["md5_actual"] = assembled_md5(db,work,p["rom_id"],p,cancel_requested,store)
         if p["md5_status"] == "mismatch":
             raise ValueError(f"assembled MD5 mismatch for rom {p['rom_id']}: {p['md5_actual']}")
     outputs = {}
@@ -211,8 +227,7 @@ def build(db, work, mra_name, skip_existing=False, plan_cache=None, cross_claims
             staged.append((Path(tmp),dest))
             with zipfile.ZipFile(tmp,"w",compression=zipfile.ZIP_STORED) as z:
                 for item in sorted(_member_items(members), key=lambda x: (x["name"].casefold(), x["crc32"], x["sha1"])):
-                    pool = work/"pool"/item["sha1"][:2]/item["sha1"]
-                    with pool.open("rb") as src,z.open(item["name"],"w") as dst:
+                    with store.open(item["sha1"]) as src,z.open(item["name"],"w") as dst:
                         while block := src.read(CHUNK):
                             check_cancel(cancel_requested)
                             dst.write(block)
@@ -240,6 +255,11 @@ def build(db, work, mra_name, skip_existing=False, plan_cache=None, cross_claims
 def build_ready(db, work, progress=None, cancel_requested=None, origin_index=None,
                 plan_cache=None, bios_zips=None):
     """Build MRA titles whose every external ROM plan is ready."""
+    with BlobStore(db, work) as store:
+        return _build_ready(db, work, progress, cancel_requested, origin_index,
+                            plan_cache, bios_zips, store)
+
+def _build_ready(db, work, progress, cancel_requested, origin_index, plan_cache, bios_zips, store):
     progress = progress or (lambda message: None)
     result = {"ready_titles":0,"built":[],"already_present":[],"errors":[]}
     mras = db.execute("SELECT * FROM mras WHERE status IN ('parsed','corrected') ORDER BY relative_path").fetchall()
@@ -291,7 +311,7 @@ def build_ready(db, work, progress=None, cancel_requested=None, origin_index=Non
         check_cancel(cancel_requested)
         try:
             outcome, path = prepare_shared_bios(work, target, members, progress, cancel_requested,
-                                                exact=target in (bios_zips or ()))
+                                                exact=target in (bios_zips or ()), store=store)
             result[outcome].append(path)
         except (ValueError, OSError, sqlite3.Error, zipfile.BadZipFile) as exc:
             shared_errors[target] = str(exc)
@@ -307,7 +327,7 @@ def build_ready(db, work, progress=None, cancel_requested=None, origin_index=Non
             item = build(db,work,mra["relative_path"],skip_existing=True,
                          plan_cache=plan_cache,progress=progress,
                          cancel_requested=cancel_requested,shared_outputs=shared_outputs,
-                         shared_errors=shared_errors)
+                         shared_errors=shared_errors,store=store)
             result["built"].extend(item["built"])
             result["already_present"].extend(item["already_present"])
         except (ValueError,OSError,sqlite3.Error,zipfile.BadZipFile) as exc:
@@ -321,12 +341,20 @@ def build_ready(db, work, progress=None, cancel_requested=None, origin_index=Non
     return result
 
 def save_send_manifest(work, mras, plan_cache, db):
-    """Save the current MRA member requirements for a fast, safe Send check."""
+    """Save the current MRA member requirements for a fast, safe Send check.
+
+    Only MRAs that are fully resolved (the ones Run builds from) define what a ZIP
+    must contain.  An MRA with an unresolved part is excluded instead of blocking the
+    shared ZIP; its missing parts are recorded under "excluded" so Send can list them.
+    """
     required = {}
     blocked = {}
+    excluded = {}
     selectors = {}
     for mra in mras:
-        for plan in plan_cache[mra["id"]]:
+        plans = plan_cache[mra["id"]]
+        is_ready = bool(plans) and not any(p["missing"] or p["ambiguous"] or p["unsupported"] for p in plans)
+        for plan in plans:
             selected = {item["part"]: item for item in plan["selected_parts"]}
             for part in part_rows(db, plan["rom_id"]):
                 if not is_external(part):
@@ -334,6 +362,15 @@ def save_send_manifest(work, mras, plan_cache, db):
                 item = selected.get(part["id"])
                 target = output_zip_for_part(db, part, item)
                 if not target:
+                    continue
+                if not is_ready:
+                    if item is None:
+                        label = part["name"] or "(unnamed)"
+                        if part["crc32"]:
+                            label += f" (CRC {part['crc32']})"
+                        excluded.setdefault(target, {}).setdefault(mra["relative_path"], [])
+                        if label not in excluded[target][mra["relative_path"]]:
+                            excluded[target][mra["relative_path"]].append(label)
                     continue
                 members = required.setdefault(target, {})
                 if item is None:
@@ -349,7 +386,9 @@ def save_send_manifest(work, mras, plan_cache, db):
                         key: item[key] for key in ("sha1", "crc32", "size")}}
     manifest = {"catalog": [[mra["relative_path"], mra["file_sha1"]] for mra in mras],
                 "required": {target: list(members.values()) for target, members in required.items()},
-                "blocked": blocked}
+                "blocked": blocked,
+                "excluded": {target: [{"mra": mra_name, "missing": names} for mra_name, names in by_mra.items()]
+                             for target, by_mra in excluded.items()}}
     work.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(prefix="send-manifest-", suffix=".tmp", dir=work)
     try:

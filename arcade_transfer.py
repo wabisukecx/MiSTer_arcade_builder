@@ -83,6 +83,23 @@ def _ensure_remote_directory(ftp, path):
             else:
                 ftp.cwd(component)
 
+def _replace_remote(ftp, temp, name, progress):
+    """Swap a verified upload in for the existing remote ZIP, restoring the old one on failure."""
+    spare = name + ".replaced"
+    with contextlib.suppress(ftplib.all_errors):
+        ftp.delete(spare)
+    ftp.rename(name, spare)
+    try:
+        ftp.rename(temp, name)
+    except Exception:
+        with contextlib.suppress(Exception):
+            ftp.rename(spare, name)
+        raise
+    with contextlib.suppress(ftplib.all_errors):
+        ftp.delete(spare)
+    progress(f"既存ZIPを置換: {name}")
+
+
 def _delete_held_entry(ftp, entry, work, cache, server, progress, cancel_requested=None):
     """Remove a held ZIP from MiSTer and out so it cannot be sent again stale."""
     check_cancel(cancel_requested)
@@ -133,8 +150,18 @@ def current_mra_requirements(db, work):
     return manifest["required"], manifest["blocked"], None
 
 
+def current_mra_exclusions(work):
+    """MRAs left out of each ZIP because some of their ROM parts are not in the pool."""
+    try:
+        manifest = json.loads((work / "send-manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    excluded = manifest.get("excluded")
+    return excluded if isinstance(excluded, dict) else {}
+
+
 def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_match=False,
-             cancel_requested=None, progress=None):
+             cancel_requested=None, progress=None, replace_different=False):
     progress = progress or (lambda message: None)
     check_cancel(cancel_requested)
     t={**config.get("mister",{}),**config.get("transfer",{})}
@@ -142,6 +169,7 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
         raise ValueError("only FTP is supported")
     entries=[]
     required, blocked, manifest_error = current_mra_requirements(db, work) if require_mra_match else ({}, {}, None)
+    exclusions = current_mra_exclusions(work) if require_mra_match and manifest_error is None else {}
     for p in sorted((work/"out").rglob("*.zip")) if (work/"out").exists() else []:
         check_cancel(cancel_requested)
         rel=p.relative_to(work/"out").as_posix()
@@ -165,6 +193,8 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
                     reason = f"current MRA mismatch: {exc}"
             if reason is not None:
                 entry.update({"collision":"local-mra-mismatch", "action":"conflict", "reason":reason})
+            elif exclusions.get(target):
+                entry["excluded_mras"] = exclusions[target]
         entries.append(entry)
     check_cancel(cancel_requested)
     if not entries:
@@ -221,14 +251,18 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
                     del cache[cache_key]
                     if not dry_run: _remember_send_cache(work, cache)
             if e["collision"]=="none" and temp in names: e["collision"]="temporary-exists"
+            replacing = replace_different and e["collision"]=="different"
+            if replacing: e["will_replace"]=True
             if dry_run: continue
             if e["collision"]=="matching":
                 e["action"]="already_present"
                 continue
-            if skip_matching and e["collision"] in ("different","temporary-exists"):
+            if skip_matching and e["collision"]=="temporary-exists" or (
+                    skip_matching and e["collision"]=="different" and not replacing):
                 e["action"]="conflict"
                 continue
-            if e["collision"]!="none": raise ValueError(f"remote collision: {dest}: {e['collision']}")
+            if e["collision"]!="none" and not replacing:
+                raise ValueError(f"remote collision: {dest}: {e['collision']}")
             try:
                 progress(f"ZIP送信中: {dest}")
                 with open(e["source"],"rb") as f:
@@ -243,8 +277,12 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
                 ftp.retrbinary("RETR "+temp,hash_uploaded,blocksize=CHUNK)
                 if h.hexdigest()!=e["sha1"]: raise ValueError("remote content mismatch")
                 check_cancel(cancel_requested)
-                ftp.rename(temp,name)
-                e["action"]="uploaded"
+                if replacing:
+                    _replace_remote(ftp, temp, name, progress)
+                    e["action"]="replaced"
+                else:
+                    ftp.rename(temp,name)
+                    e["action"]="uploaded"
                 remote_mdtm = _remote_mdtm(ftp, name)
                 if remote_mdtm is not None:
                     cache[cache_key] = {"size":e["size"], "sha1":e["sha1"], "mdtm":remote_mdtm}

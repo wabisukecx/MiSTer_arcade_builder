@@ -15,6 +15,7 @@ from arcade_pool import (OriginIndex, ingest, part_rows, is_external, choices, r
                          plans_for_mra, output_zip_for_part, status)
 from arcade_build import literal_bytes, assembled_md5, build, build_ready, verify_zip
 from arcade_bios import bios_zip_names
+from arcade_store import BlobStore, pack_pool, verify_pool, rebuild_index
 from arcade_reports import (list_mras, missing_report, format_missing_report,
                             missing_zip_names, missing_output_zips,
                             missing_output_causes, existing_output_diagnostics,
@@ -163,6 +164,10 @@ def main(argv=None):
     p.add_argument("--output",type=Path,help="write the --zip list to a UTF-8 text file")
     p=sub.add_parser("build"); p.add_argument("mra",nargs="?",help="omit to build every ready MRA title")
     p=sub.add_parser("verify"); p.add_argument("zip",type=Path)
+    p=sub.add_parser("pack-pool",help="move loose pool files into verified pack ZIPs")
+    p.add_argument("--dry-run",action="store_true"); p.add_argument("--keep-loose",action="store_true",help="do not delete loose files after packing")
+    p=sub.add_parser("verify-pool",help="check every pool blob can be read back"); p.add_argument("--quick",action="store_true",help="skip SHA-1 re-hash")
+    sub.add_parser("rebuild-index",help="restore blob/origin tables from pack manifests")
     p=sub.add_parser("transfer"); p.add_argument("--dry-run",action="store_true")
     p=sub.add_parser("send",help="send output ZIPs to MiSTer using the configured connection")
     p.add_argument("--dry-run",action="store_true")
@@ -206,6 +211,11 @@ def main(argv=None):
                     result={"output":str(args.output),"zip_candidates":len(names)}
                 else:
                     print("\n".join(names)); return 0
+        elif args.cmd=="pack-pool": result=pack_pool(db,work,progress=print,dry_run=args.dry_run,delete_loose=not args.keep_loose)
+        elif args.cmd=="verify-pool":
+            result=verify_pool(db,work,deep=not args.quick,progress=print)
+            if not result["ok"]: print(json.dumps(result,ensure_ascii=False,indent=2)); return 1
+        elif args.cmd=="rebuild-index": result=rebuild_index(db,work,progress=print)
         elif args.cmd=="build": result=build(db,work,args.mra) if args.mra else build_ready(db,work)
         elif args.cmd=="verify":
             plans=[json.loads(r["plan"]) for r in db.execute("SELECT plan FROM builds")]
@@ -219,7 +229,7 @@ def main(argv=None):
             if not members: raise ValueError("no stored plan for this ZIP")
             verify_zip(args.zip,list(members.values())); result={"zip":str(args.zip),"verified_members":len(members)}
         else: result=transfer(db,work,config,args.dry_run,skip_matching=args.cmd=="send",
-                              require_mra_match=True)
+                              require_mra_match=True,replace_different=args.cmd=="send")
         if args.cmd=="missing" and not args.json and not args.zip: print(format_missing_report(result))
         else: print(json.dumps(result,ensure_ascii=False,indent=2))
     except (ValueError,OSError,sqlite3.Error) as exc:

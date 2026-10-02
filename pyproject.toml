@@ -17,7 +17,7 @@ arcadegui = "arcadegui:main"
 
 [tool.setuptools]
 py-modules = [
-  "arcadetool", "arcade_common", "arcade_mra", "arcade_pool",
-  "arcade_build", "arcade_reports", "arcade_transfer",
+  "arcadetool", "arcade_common", "arcade_bios", "arcade_mra", "arcade_pool",
+  "arcade_build", "arcade_reports", "arcade_transfer", "arcade_store",
   "arcadegui", "gui_i18n", "gui_layout",
 ]

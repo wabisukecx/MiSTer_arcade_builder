@@ -61,6 +61,7 @@ TEXT = {
     "send_summary": ("送信: {sent}件 / 内容一致で再送省略: {matched}件 / 保留: {conflicts}件",
                      "Sent: {sent} / already present: {matched} / conflicts: {conflicts}"),
     "send_uploaded": ("送信", "Uploaded"),
+    "send_replaced": ("置換送信", "Replaced"),
     "send_present": ("再送省略", "Already present"),
     "send_conflict": ("内容が異なるため保留", "Conflict"),
     "send_local_mra_mismatch": ("現在のMRAと不一致のため保留", "Held: current MRA mismatch"),

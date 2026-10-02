@@ -111,7 +111,7 @@ class BuilderTests(unittest.TestCase):
 
     def test_alternative_rom_zero_and_duplicate_part(self):
         self.zip("a", "second.zip", {"x": b"123"})
-        m = self.mra("Alt.mra", f'<rom index="0" zip="first.zip"><part name="x" crc="{crc(b"123")}"/></rom><rom index="0" zip="second.zip"><part name="x" crc="{crc(b"123")}"/><part name="x" crc="{crc(b"123")}"/></rom>')
+        m = self.mra("Alt.mra", f'<rom index="0" zip="first.zip"><part name="x" crc="{crc(b"absent")}"/></rom><rom index="0" zip="second.zip"><part name="x" crc="{crc(b"123")}"/><part name="x" crc="{crc(b"123")}"/></rom>')
         p = a.plans_for_mra(self.db, m)[0]
         self.assertEqual(p["zip_spec"], "second.zip")
         self.assertEqual(p["alternatives"], 2)
@@ -134,15 +134,17 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertEqual(self.db.execute("SELECT zip_spec FROM roms WHERE mra_id=?", (before["A.mra"],)).fetchone()[0], "new.zip")
 
-    def test_cross_mra_name_collision_before_output(self):
+    def test_same_name_different_crc_variants_share_one_zip(self):
         self.zip("a", "shared.zip", {"x": b"one"})
         self.zip("b", "shared.zip", {"x": b"two"})
         self.mra("One.mra", f'<rom index="0" zip="shared.zip"><part name="x" crc="{crc(b"one")}"/></rom>')
         self.mra("Two.mra", f'<rom index="0" zip="shared.zip"><part name="x" crc="{crc(b"two")}"/></rom>')
-        with self.assertRaisesRegex(ValueError, "cross-MRA output collision"):
-            a.build(self.db, self.work, "One.mra")
-        self.assertFalse((self.work / "out" / "shared.zip").exists())
-
+        result = a.build_ready(self.db, self.work)
+        self.assertEqual(result["errors"], [])
+        with zipfile.ZipFile(self.work / "out" / "shared.zip") as z:
+            infos = z.infolist()
+        self.assertEqual([i.filename for i in infos], ["x", "x"])
+        self.assertEqual({f"{i.CRC:08x}" for i in infos}, {crc(b"one"), crc(b"two")})
     def test_failed_verification_leaves_no_completed_zip(self):
         self.zip("a", "test.zip", {"x": b"abc"})
         self.mra("Fail.mra", f'<rom index="0" zip="test.zip" md5="00000000000000000000000000000000"><part name="x" crc="{crc(b"abc")}"/></rom>')
@@ -156,8 +158,11 @@ class BuilderTests(unittest.TestCase):
         self.mra("Multi.mra", f'<rom index="0" zip="first.zip"><part name="x" crc="{crc(b"one")}"/></rom><rom index="2" zip="second.zip"><part name="y" crc="{crc(b"two")}"/></rom>')
         # Corrupt the selected pool object after intake; the second staged ZIP must fail verification.
         sha = hashlib.sha1(b"two").hexdigest()
-        (self.work / "pool" / sha[:2] / sha).write_bytes(b"bad")
-        with self.assertRaisesRegex(ValueError, "ZIP member mismatch"):
+        self.db.execute("DELETE FROM blob_packs WHERE sha1=?", (sha,))  # serve it from a (corrupted) loose file
+        loose = self.work / "pool" / sha[:2] / sha
+        loose.parent.mkdir(parents=True, exist_ok=True)
+        loose.write_bytes(b"bad")
+        with self.assertRaisesRegex(ValueError, "required ROM not found or mismatched"):
             a.build(self.db, self.work, "Multi.mra")
         self.assertFalse((self.work / "out" / "first.zip").exists())
         self.assertFalse((self.work / "out" / "second.zip").exists())
@@ -225,6 +230,176 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM ingested_archives").fetchone()[0], 1)
         new_sha = hashlib.sha1(b"new one").hexdigest()
         self.assertFalse((self.work / "pool" / new_sha[:2] / new_sha).exists())
+
+    def pool_files(self):
+        """Loose blob files (everything under pool/ except packs and temporary files)."""
+        pool = self.work / "pool"
+        return [p for p in pool.rglob("*") if p.is_file() and "packs" not in p.relative_to(pool).parts]
+
+    def test_ingest_stores_new_content_in_one_pack_with_manifest(self):
+        source = self.zip("input", "set.zip", {"a.rom": b"alpha", "b.rom": b"beta", "copy.rom": b"alpha"})
+        self.assertEqual(self.pool_files(), [])
+        packs = sorted((self.work / "pool" / "packs").glob("*.zip"))
+        self.assertEqual(len(packs), 1)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM blob_packs").fetchone()[0], 2)
+        with zipfile.ZipFile(packs[0]) as z:
+            self.assertEqual(set(z.namelist()), {hashlib.sha1(b"alpha").hexdigest(),
+                                                 hashlib.sha1(b"beta").hexdigest(), "manifest.json"})
+            self.assertIsNone(z.testzip())
+            manifest = json.loads(z.read("manifest.json"))
+        self.assertEqual({o["member"] for o in manifest["origins"]}, {"a.rom", "b.rom", "copy.rom"})
+        self.assertEqual({o["archive"] for o in manifest["origins"]}, {str(source.resolve())})
+        with a.BlobStore(self.db, self.work) as store:
+            with store.open(hashlib.sha1(b"beta").hexdigest()) as handle:
+                self.assertEqual(handle.read(), b"beta")
+            self.assertTrue(store.exists(hashlib.sha1(b"alpha").hexdigest()))
+            self.assertFalse(store.exists("0" * 40))
+
+    def test_ingest_dedupes_across_archives_and_keeps_a_manifest(self):
+        self.zip("one", "first.zip", {"x": b"same"})
+        second = self.base / "two"
+        second.mkdir()
+        with zipfile.ZipFile(second / "second.zip", "w") as z:
+            z.writestr("y", b"same")
+        result = a.ingest(self.db, self.work, [second])
+        self.assertEqual((result["new_blobs"], result["duplicate_content"]), (0, 1))
+        packs = sorted((self.work / "pool" / "packs").glob("*.zip"))
+        self.assertEqual(len(packs), 2)  # the second one only records where the content came from
+        with zipfile.ZipFile(packs[0]) as z, zipfile.ZipFile(packs[1]) as w:
+            self.assertEqual(sorted(len(x.namelist()) for x in (z, w)), [1, 2])
+
+    def test_cancel_during_pack_ingest_leaves_no_pack_or_mapping(self):
+        source = self.base / "input"
+        source.mkdir()
+        with zipfile.ZipFile(source / "big.zip", "w") as z:
+            z.writestr("one", b"first")
+            z.writestr("two", b"second")
+        state = {"checks": 0}
+        def cancel_requested():
+            state["checks"] += 1
+            return state["checks"] == 6
+        with self.assertRaises(a.OperationCancelled):
+            a.ingest(self.db, self.work, [source], cancel_requested=cancel_requested)
+        self.assertEqual(list((self.work / "pool" / "packs").glob("*")), [])
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM blob_packs").fetchone()[0], 0)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM origins").fetchone()[0], 0)
+
+    def test_loose_storage_is_still_readable(self):
+        source = self.base / "legacy"
+        source.mkdir()
+        with zipfile.ZipFile(source / "old.zip", "w") as z:
+            z.writestr("rom", b"legacy")
+        a.ingest(self.db, self.work, [source], storage="loose")
+        sha = hashlib.sha1(b"legacy").hexdigest()
+        self.assertEqual(len(self.pool_files()), 1)
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM blob_packs").fetchone()[0], 0)
+        with a.BlobStore(self.db, self.work) as store, store.open(sha) as handle:
+            self.assertEqual(handle.read(), b"legacy")
+
+    def _loose_pool(self):
+        source = self.base / "legacy"
+        source.mkdir()
+        with zipfile.ZipFile(source / "old.zip", "w") as z:
+            z.writestr("r1", b"one"); z.writestr("r2", b"two")
+        a.ingest(self.db, self.work, [source], storage="loose")
+        return hashlib.sha1(b"one").hexdigest(), hashlib.sha1(b"two").hexdigest()
+
+    def test_pack_pool_migrates_loose_files_and_verify_is_clean(self):
+        one, two = self._loose_pool()
+        self.assertEqual(len(self.pool_files()), 2)
+        plan = a.pack_pool(self.db, self.work, dry_run=True)
+        self.assertEqual(plan["loose_blobs"], 2)
+        self.assertEqual(len(self.pool_files()), 2)
+        result = a.pack_pool(self.db, self.work)
+        self.assertEqual((result["packed_blobs"], result["problems"]), (2, []))
+        self.assertEqual(self.pool_files(), [])
+        with a.BlobStore(self.db, self.work) as store, store.open(one) as h:
+            self.assertEqual(h.read(), b"one")
+        self.assertTrue(a.verify_pool(self.db, self.work)["ok"])
+        self.assertEqual(a.pack_pool(self.db, self.work)["loose_blobs"], 0)
+
+    def test_pack_pool_skips_corrupt_loose_file_and_keeps_it(self):
+        one, two = self._loose_pool()
+        (self.work / "pool" / one[:2] / one).write_bytes(b"BAD")
+        result = a.pack_pool(self.db, self.work)
+        self.assertEqual(result["packed_blobs"], 1)
+        self.assertEqual(result["problems"][0]["kind"], "corrupt-loose-file")
+        self.assertTrue((self.work / "pool" / one[:2] / one).exists())
+
+    def test_verify_pool_detects_damaged_pack_and_rebuild_index_restores(self):
+        one, two = self._loose_pool()
+        a.pack_pool(self.db, self.work)
+        pack = next((self.work / "pool" / "packs").glob("*.zip"))
+        for table in ("origins", "blob_packs", "ingested_archives", "blobs"): self.db.execute(f"DELETE FROM {table}")
+        self.db.commit()
+        info = a.rebuild_index(self.db, self.work)
+        self.assertEqual((info["packs"], info["blobs"], info["origins"]), (1, 2, 2))
+        self.assertTrue(a.verify_pool(self.db, self.work)["ok"])
+        data = bytearray(pack.read_bytes()); data[40] ^= 0xFF; pack.write_bytes(bytes(data))
+        self.assertFalse(a.verify_pool(self.db, self.work)["ok"])
+
+    def _shared_zip_with_unfinished_alternative(self):
+        self.zip("a", "have.zip", {"x": b"abc"})
+        self.mra("Ok.mra", f'<rom index="0" zip="have.zip"><part name="x" crc="{crc(b"abc")}"/></rom>')
+        self.mra("Bad.mra", f'<rom index="0" zip="have.zip"><part name="x" crc="{crc(b"abc")}"/>'
+                            '<part name="gone.rom" crc="deadbeef"/></rom>')
+        a.build_ready(self.db, self.work)
+
+    def test_unfinished_mra_is_excluded_and_its_missing_parts_are_listed(self):
+        self._shared_zip_with_unfinished_alternative()
+        manifest = json.loads((self.work / "send-manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["blocked"], {})
+        self.assertEqual(manifest["excluded"]["have.zip"],
+                         [{"mra": "Bad.mra", "missing": ["gone.rom (CRC deadbeef)"]}])
+        result = a.transfer(self.db, self.work, {}, dry_run=True, require_mra_match=True)
+        entry = result["entries"][0]
+        self.assertNotIn("action", entry)
+        self.assertEqual(entry["excluded_mras"][0]["mra"], "Bad.mra")
+
+    class _ReplaceFTP:
+        files = {}
+        log = []
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def connect(self, *args, **kwargs): pass
+        def login(self, *args, **kwargs): pass
+        def voidcmd(self, *args): pass
+        def cwd(self, *args): pass
+        def nlst(self): return list(self.files)
+        def size(self, name): return len(self.files[name])
+        def retrbinary(self, command, receive, blocksize=None): receive(self.files[command[5:]])
+        def storbinary(self, command, source, blocksize=None): self.files[command[5:]] = source.read()
+        def rename(self, old, new):
+            self.log.append((old, new)); self.files[new] = self.files.pop(old)
+        def delete(self, name):
+            if name not in self.files: raise a.ftplib.error_perm("550 no such file")
+            del self.files[name]
+
+    def test_send_replaces_a_different_remote_zip_when_local_zip_is_current(self):
+        self._shared_zip_with_unfinished_alternative()
+        fake = self._ReplaceFTP
+        fake.files = {"have.zip": b"stale"}; fake.log = []
+        config = {"mister": {"host": "example.test"}}
+        with mock.patch.object(a.ftplib, "FTP", fake):
+            dry = a.transfer(self.db, self.work, config, dry_run=True, skip_matching=True,
+                             require_mra_match=True, replace_different=True)
+            self.assertTrue(dry["entries"][0]["will_replace"])
+            self.assertEqual(fake.files, {"have.zip": b"stale"})
+            result = a.transfer(self.db, self.work, config, dry_run=False, skip_matching=True,
+                                require_mra_match=True, replace_different=True)
+        self.assertEqual(result["entries"][0]["action"], "replaced")
+        self.assertEqual(fake.files, {"have.zip": (self.work / "out" / "have.zip").read_bytes()})
+        self.assertEqual(fake.log[-1], ("have.zip.uploading", "have.zip"))
+
+    def test_send_still_holds_a_different_remote_zip_without_replace_permission(self):
+        self._shared_zip_with_unfinished_alternative()
+        fake = self._ReplaceFTP
+        fake.files = {"have.zip": b"stale"}; fake.log = []
+        with mock.patch.object(a.ftplib, "FTP", fake):
+            result = a.transfer(self.db, self.work, {"mister": {"host": "example.test"}}, dry_run=False,
+                                skip_matching=True, require_mra_match=True)
+        self.assertEqual(result["entries"][0]["action"], "conflict")
+        self.assertEqual(fake.files, {"have.zip": b"stale"})
 
     def test_plain_assembled_md5_matched_and_content_deduplicated(self):
         self.zip("a", "one.zip", {"x": b"abc"})
@@ -299,9 +474,12 @@ class BuilderTests(unittest.TestCase):
         self.mra("One.mra", f'<rom index="0" zip="shared.zip"><part name="one" crc="{crc(b"one")}"/></rom>')
         self.mra("Two.mra", f'<rom index="0" zip="shared.zip"><part name="two" crc="{crc(b"two")}"/></rom>')
         a.build_ready(self.db, self.work)
+        with zipfile.ZipFile(self.work / "out" / "shared.zip", "w") as z:
+            z.writestr("one", b"one")
         result = a.transfer(self.db, self.work, {}, dry_run=True, require_mra_match=True)
         self.assertEqual(result["entries"][0]["action"], "conflict")
-        self.assertIn("ZIP member set mismatch", result["entries"][0]["reason"])
+        self.assertIn("current MRA mismatch", result["entries"][0]["reason"])
+        self.assertIn("two", result["entries"][0]["reason"])
         with zipfile.ZipFile(self.work / "out" / "shared.zip", "w") as z:
             z.writestr("one", b"one")
             z.writestr("two", b"two")
@@ -554,18 +732,20 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(second["built"], [])
         self.assertEqual([Path(p).name for p in second["already_present"]], ["ready.zip"])
 
-    def test_build_without_mra_reports_existing_zip_mismatch(self):
+    def test_corrupt_existing_zip_is_rebuilt_with_backup(self):
         self.zip("a", "ready.zip", {"x": b"ready"})
         self.mra("Ready.mra", f'<rom index="0" zip="ready.zip"><part name="x" crc="{crc(b"ready")}"/></rom>')
         out = self.work / "out"
         out.mkdir()
         (out / "ready.zip").write_bytes(b"not a ZIP")
         result = a.build_ready(self.db, self.work)
-        self.assertEqual(result["built"], [])
-        self.assertEqual(len(result["errors"]), 1)
-        self.assertIn("existing output differs", result["errors"][0]["error"])
-        self.assertEqual((out / "ready.zip").read_bytes(), b"not a ZIP")
-
+        self.assertEqual(result["errors"], [])
+        self.assertEqual([Path(p).name for p in result["built"]], ["ready.zip"])
+        with zipfile.ZipFile(out / "ready.zip") as z:
+            self.assertEqual(z.read("x"), b"ready")
+        backups = list((self.work / "backups").glob("ready-*.zip"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), b"not a ZIP")
     def test_run_pipeline_creates_zip_reports_and_skips_unchanged_input(self):
         (self.mras / "Ready.mra").write_text(
             f'<misterromdescription><rom index="0" zip="ready.zip">'
@@ -785,9 +965,11 @@ class BuilderTests(unittest.TestCase):
     def test_run_log_lists_mra_zip_names_absent_from_out(self):
         (self.mras / "Missing.mra").write_text(
             '<misterromdescription><rom index="0" zip="needed.zip|alternative.zip">'
-            '<part name="x" crc="12345678"/></rom></misterromdescription>')
+            f'<part name="a" crc="{crc(b"a")}"/><part name="x" crc="12345678"/></rom></misterromdescription>')
         source = self.base / "input"
         source.mkdir()
+        with zipfile.ZipFile(source / "needed.zip", "w") as z:
+            z.writestr("a", b"a")
         result = a.run_pipeline(self.db,self.work,self.mras,[source])
         self.assertEqual(result["missing_output_zip_count"],1)
         self.assertEqual(Path(result["missing_output_zip_list"]).read_text(encoding="utf-8"),"needed.zip\n")
@@ -797,7 +979,16 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("x (CRC 12345678; needed.zip|alternative.zip)", causes)
         self.assertIn("Missing output causes report:", Path(result["run_log"]).read_text(encoding="utf-8"))
 
-    def test_run_records_existing_shared_zip_as_cause_of_absent_game(self):
+    def test_run_log_omits_titles_without_any_resolved_part(self):
+        (self.mras / "Nothing.mra").write_text(
+            '<misterromdescription><rom index="0" zip="needed.zip|alternative.zip">'
+            '<part name="x" crc="12345678"/></rom></misterromdescription>')
+        source = self.base / "input"
+        source.mkdir()
+        result = a.run_pipeline(self.db,self.work,self.mras,[source])
+        self.assertEqual(result["missing_output_zip_count"],0)
+        self.assertEqual(result["missing_titles"],1)
+    def test_run_repairs_incomplete_existing_shared_zip(self):
         (self.mras / "Game.mra").write_text(
             '<misterromdescription>'
             f'<rom index="0" zip="game.zip"><part name="game" crc="{crc(b"game")}"/></rom>'
@@ -823,19 +1014,12 @@ class BuilderTests(unittest.TestCase):
         with zipfile.ZipFile(out / "bios.zip", "w") as z:
             z.writestr("bios-a", b"a")
         result = a.run_pipeline(self.db, self.work, self.mras, [source])
-        self.assertEqual(result["missing_output_zip_count"], 1)
-        self.assertFalse((out / "game.zip").exists())
-        causes = Path(result["missing_output_causes"]).read_text(encoding="utf-8")
-        self.assertIn("game.zip | build error | MRA: Game.mra", causes)
-        self.assertIn("existing output differs:", causes)
-        self.assertIn("bios.zip: ZIP member set mismatch", causes)
-        self.assertIn("Required bios.zip members for this MRA: bios-a, bios-b", causes)
-        self.assertIn("Current bios.zip members: bios-a", causes)
-        self.assertIn("Missing from current ZIP: bios-b", causes)
-        self.assertIn("Required member: bios-b | CRC32", causes)
-        self.assertIn("Required variant (1 MRA): bios-a, bios-b", causes)
-        self.assertIn("Required variant (1 MRA): bios-a", causes)
-
+        self.assertEqual(result["missing_output_zip_count"], 0)
+        self.assertEqual(result["build"]["errors"], [])
+        self.assertTrue((out / "game.zip").is_file())
+        with zipfile.ZipFile(out / "bios.zip") as z:
+            self.assertEqual(set(z.namelist()), {"bios-a", "bios-b"})
+        self.assertEqual(len(list((self.work / "backups").glob("bios-*.zip"))), 1)
     def test_stvbios_union_upgrades_valid_subset_and_builds_all_games(self):
         (self.mras / "A.mra").write_text(
             '<misterromdescription>'
@@ -879,7 +1063,7 @@ class BuilderTests(unittest.TestCase):
         sent = a.transfer(self.db, self.work, {}, dry_run=True, require_mra_match=True)
         self.assertFalse(any(item.get("action") == "conflict" for item in sent["entries"]))
 
-    def test_stvbios_union_rejects_conflicting_member_content(self):
+    def test_bios_zip_only_receives_parts_found_in_it(self):
         self.zip("first", "stvbios.zip", {"bios": b"first"})
         self.zip("second", "other.zip", {"bios": b"second"})
         self.mra("A.mra", f'<rom index="0" zip="stvbios.zip"><part name="bios" crc="{crc(b"first")}"/></rom>')
@@ -887,10 +1071,11 @@ class BuilderTests(unittest.TestCase):
         without_dat = a.build_ready(self.db, self.work)
         self.assertEqual(without_dat["bios_unions"], [])
         result = a.build_ready(self.db, self.work, bios_zips=frozenset({"stvbios.zip"}))
-        self.assertFalse((self.work / "out" / "stvbios.zip").exists())
-        self.assertTrue(any("shared BIOS member conflict" in item["error"]
-                            for item in result["errors"]))
-
+        self.assertEqual(result["errors"], [])
+        with zipfile.ZipFile(self.work / "out" / "stvbios.zip") as z:
+            self.assertEqual({(i.filename, f"{i.CRC:08x}") for i in z.infolist()}, {("bios", crc(b"first"))})
+        with zipfile.ZipFile(self.work / "out" / "other.zip") as z:
+            self.assertEqual({(i.filename, f"{i.CRC:08x}") for i in z.infolist()}, {("bios", crc(b"second"))})
     def test_run_uses_dat_isbios_to_merge_a_nonhardcoded_bios_zip(self):
         dat = self.base / "mame.dat"
         dat.write_text('<?xml version="1.0"?><datafile>'
