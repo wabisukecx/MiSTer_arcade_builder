@@ -18,7 +18,7 @@ python -m pip install ".[gui]"
 python arcadegui.py
 ```
 
-English quick start: install with `python -m pip install ".[gui]"`, then run `python arcadegui.py`. Select **English** at the top right. Choose an MRA folder and a source ROM ZIP folder, then use **Run** to build ZIPs. Enter your MiSTer IP address to fetch MRAs by FTP or to use **Send**. The language choice is saved for the next launch.
+English quick start: install with `python -m pip install ".[gui]"`, then run `python arcadegui.py`. Select **English** at the top right. Choose an MRA folder and a source ROM ZIP folder, then use **Build ROM ZIPs** to build ZIPs. Enter your MiSTer IP address to fetch MRAs by FTP or to use **Send to MiSTer**. The language choice is saved for the next launch.
 
 ## 使い方
 
@@ -35,9 +35,9 @@ English quick start: install with `python -m pip install ".[gui]"`, then run `py
 
 操作は次の3つです。
 
-- **Run**: MRAの取得、解析、ROMの取り込み、MRAとの照合、完成できるタイトルのZIP作成と検証を順に行います。実行中は、照合中のMRA、取り込み中のROM、作成・検証中のZIPを、状態欄とログに表示します。完了後に`run-log.txt`へ詳細を残します。
-- **Send**: 作成したZIPをMiSTerへ送ります。
-- **Cancel**: 安全な区切りでRunまたはSendを中止します。ZIP作成中は一時ファイルを片付け、完成済みのZIPは残します。FTP送信中は一時名のファイルを削除して中止を試みます。通信中は、現在のFTP操作が戻るまで少し待つ場合があります。中止したRunの後は、Sendの前にRunをやり直してください。
+- **ROM ZIPを作成**(以下、Run): MRAの取得、解析、ROMの取り込み、MRAとの照合、完成できるタイトルのZIP作成と検証を順に行います。実行中は、照合中のMRA、取り込み中のROM、作成・検証中のZIPを、状態欄とログに表示します。完了後に`run-log.txt`へ詳細を残します。
+- **MiSTerへ送信**(以下、Send): 作成したZIPをMiSTerへ送ります。
+- **中止**(Cancel): 安全な区切りでRunまたはSendを中止します。ZIP作成中は一時ファイルを片付け、完成済みのZIPは残します。FTP送信中は一時名のファイルを削除して中止を試みます。通信中は、現在のFTP操作が戻るまで少し待つ場合があります。中止したRunの後は、Sendの前にRunをやり直してください。
 
 送信先は`/media/fat/games/mame`です(MRAは`/media/fat/_Arcade`から取得します)。
 

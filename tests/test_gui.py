@@ -59,9 +59,10 @@ class GuiTests(unittest.TestCase):
                 left = window.content_row.itemAt(0).widget()
                 right = window.content_row.itemAt(1).widget()
                 self.assertGreater(right.geometry().left(),left.geometry().right())
-                self.assertLess(left.layout().itemAt(0).widget().geometry().bottom(),
-                                left.layout().itemAt(1).widget().geometry().top())
-                self.assertEqual(window.height(),720)
+                cards = left.layout().itemAt(0).widget().widget()
+                self.assertLess(cards.layout().itemAt(0).widget().geometry().bottom(),
+                                cards.layout().itemAt(1).widget().geometry().top())
+                self.assertEqual(window.height(),860)
                 window.mra_dir.clear()
                 window.rom_dir.clear()
                 window._start("run")
@@ -109,7 +110,7 @@ class GuiTests(unittest.TestCase):
                 self.assertIn("保留: 1件",window.status.text())
                 window.language_selector.setCurrentIndex(1)
                 self.assertEqual(window.windowTitle(),"MiSTer Arcade Auto Setup")
-                self.assertEqual(window.run_button.text(),"Run  Build ROM ZIPs")
+                self.assertEqual(window.run_button.text(),"Build ROM ZIPs")
                 self.assertEqual(window.tabs.tabText(0),"Log")
                 self.assertIn("New ZIPs",window.tabs.tabText(1))
                 self.assertIn("Transfer complete",window.status.text())
@@ -211,7 +212,7 @@ class GuiTests(unittest.TestCase):
                 self.assertIn("Run is required before Send", text)
                 self.assertIn("削除", text)
                 self.assertNotIn("a.zip", text)
-                self.assertIn("Runが必要", window.status.text())
+                self.assertIn("ROM ZIPを作成", window.status.text())
                 window.deleteLater()
 
 

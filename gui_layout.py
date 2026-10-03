@@ -1,10 +1,11 @@
 """Construct the MiSTer Arcade desktop window."""
 from __future__ import annotations
 from pathlib import Path
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QPlainTextEdit, QProgressBar, QPushButton,
-    QTabWidget, QTreeWidget, QVBoxLayout, QWidget,
+    QFrame, QHeaderView, QScrollArea, QTabWidget, QTreeWidget, QVBoxLayout, QWidget,
 )
 
 def build_ui(self, work_dir: Path):
@@ -41,6 +42,20 @@ def build_ui(self, work_dir: Path):
     left_layout.setContentsMargins(0, 0, 0, 0)
     left_layout.setSpacing(12)
     self.content_row.addWidget(left, 1)
+    # The setting cards scroll when the window is short; the buttons below stay in view.
+    cards_widget = QWidget()
+    cards_widget.setObjectName("cards")
+    cards_layout = QVBoxLayout(cards_widget)
+    cards_layout.setContentsMargins(0, 0, 6, 0)
+    cards_layout.setSpacing(12)
+    scroll = QScrollArea()
+    scroll.setObjectName("left_scroll")
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setStyleSheet("QScrollArea{background:transparent;border:none;} #cards{background:transparent;}")
+    scroll.setWidget(cards_widget)
+    left_layout.addWidget(scroll, 1)
     result_panel, result_layout = self._section_card("result")
     self.content_row.addWidget(result_panel, 1)
     outer.addLayout(self.content_row, 1)
@@ -66,7 +81,7 @@ def build_ui(self, work_dir: Path):
     self.remote_hint = QLabel(self._t("remote_paths"))
     self.remote_hint.setObjectName("hint")
     conn_form.addRow("", self.remote_hint)
-    left_layout.addWidget(connection)
+    cards_layout.addWidget(connection)
 
     folders, folders_layout = self._section_card("folders")
     folder_form = QFormLayout()
@@ -116,7 +131,8 @@ def build_ui(self, work_dir: Path):
     self.open_out.clicked.connect(self._open_out)
     out_layout.addWidget(self.open_out)
     folder_form.addRow(self._form_label("output_folder"), out_row)
-    left_layout.addWidget(folders)
+    cards_layout.addWidget(folders)
+    cards_layout.addStretch(1)
 
     actions = QHBoxLayout()
     self.run_button = QPushButton(self._t("run"))
@@ -145,7 +161,6 @@ def build_ui(self, work_dir: Path):
     status_row.addWidget(self.status, 1)
     status_row.addWidget(self.progress)
     left_layout.addLayout(status_row)
-    left_layout.addStretch(1)
 
     self.tabs = QTabWidget()
     self.log = QPlainTextEdit()
@@ -159,6 +174,11 @@ def build_ui(self, work_dir: Path):
     self.missing_roms.setObjectName("missing_roms")
     self.missing_roms.setColumnCount(2)
     self.missing_roms.setUniformRowHeights(True)
+    self.missing_roms.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+    header = self.missing_roms.header()
+    header.setStretchLastSection(False)
+    header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+    header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
     self.alternative_list = QListWidget()
     self.alternative_list.setObjectName("alternative_list")
     self.tabs.addTab(self.log, self._t("tab_log"))

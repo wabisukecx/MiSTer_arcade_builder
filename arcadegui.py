@@ -88,7 +88,7 @@ class MainWindow(QMainWindow):
         self._last_result = None
         self._last_status_raw = None
         self.setWindowTitle(self._t("title"))
-        self.resize(1440, 720)
+        self.resize(1440, 860)
         self.setMinimumSize(1160, 720)
         build_ui(self, WORK_DIR)
         self.missing_roms.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -217,7 +217,12 @@ class MainWindow(QMainWindow):
                 for part in mra["missing"]:
                     child.addChild(QTreeWidgetItem([part, ""]))
         tree.expandToDepth(1)
-        tree.resizeColumnToContents(1)
+        def add_tooltips(item):
+            item.setToolTip(0, item.text(0))
+            for index in range(item.childCount()):
+                add_tooltips(item.child(index))
+        for index in range(tree.topLevelItemCount()):
+            add_tooltips(tree.topLevelItem(index))
 
     def _refresh_tabs(self):
         self.tabs.setTabText(0, self._t("tab_log"))
@@ -543,7 +548,7 @@ class MainWindow(QMainWindow):
             self._append_log(self._t("dat_missing", path=dat_text))
             return
         if operation == "send" and not host:
-            self._append_log("SendにはMiSTerのIPアドレスが必要です。")
+            self._append_log("MiSTerへ送信するにはIPアドレスが必要です。")
             return
         self._save_settings()
         self._save_password()
