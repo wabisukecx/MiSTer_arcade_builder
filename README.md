@@ -1,12 +1,16 @@
 # MiSTer Arcade Auto Setup / MiSTer Arcade 自動セットアップ
 
-MRA(MiSTerのアーケード用定義ファイル)に基づいて、MiSTer用のROM ZIPを再構成して送るツールです。手元のROMをSHA-1でプールにまとめ、MRAが要求する部品だけを集めたZIPを作って、MiSTerへFTPで送ります。原本のROM ZIPとMRAは読み取り専用で、変更しません。ROM・MRA・MiSTerの接続情報は、リポジトリに含めません。
+ROM ZIPの再構成・FTP転送 / ROM ZIP builder and FTP transfer
+
+MRA(MiSTerのアーケード用定義ファイル)に基づいて、利用者が用意したROM ZIPを再構成し、MiSTerへFTPで送る非公式ユーティリティです。手元のROMをSHA-1でプールにまとめ、選択したMRAが要求する部品を集めたZIPを作ります。ROM配布サイトからのダウンロード機能や、MiSTerのコアの導入・更新機能はありません。MiSTer公式プロジェクトによる提供・承認を示すものではありません。
+
+元ROM ZIPは変更しません。ローカルMRAは解析時には読み取りのみですが、FTP取得を有効にすると、指定したMRA保存先の同名ファイルを取得内容で更新します。ROM・BIOS・MRA・DAT・MiSTerの接続情報は、リポジトリに含めません。利用者が使用する権限のあるデータを用意してください。
 
 操作は基本的にGUIで行います。CLIは調査・保守用です(最後の節)。
 
 ## 準備と起動
 
-Python 3.10以上が必要です。GUIにはPyQt6とkeyringを使います。リポジトリのフォルダーで次を実行して導入します。
+Python 3.10以上が必要です。GUIにはPyQt6とkeyringを使います。リポジトリを取得・展開し、そのフォルダーを開いて次を実行します。通常の利用は、このフォルダーからソースを起動する手順を使ってください。
 
 ```powershell
 python -m pip install ".[gui]"
@@ -18,13 +22,15 @@ python -m pip install ".[gui]"
 python arcadegui.py
 ```
 
-English quick start: install with `python -m pip install ".[gui]"`, then run `python arcadegui.py`. Select **English** at the top right. Choose an MRA folder and a source ROM ZIP folder, then use **Build ROM ZIPs** to build ZIPs. Enter your MiSTer IP address to fetch MRAs by FTP or to use **Send to MiSTer**. The language choice is saved for the next launch.
+`Start_GUI.cmd`はWindows用です。起動できない場合は、同じフォルダーから`python arcadegui.py`を実行してエラーを確認してください。GUIの作業先はソース配置先の`.local-work`、CLIの既定作業先は実行時のフォルダーの`.local-work`です。両方を同じリポジトリのフォルダーから起動すると、同じ作業データを使用できます。
+
+English quick start: this is an unofficial ROM ZIP builder and FTP transfer tool for MiSTer. It does not obtain ROMs from distribution sites or install/update cores. Supply ROM ZIPs and MRAs you are authorized to use. From the repository folder, install with `python -m pip install ".[gui]"`, then run `python arcadegui.py`. Select **English** at the top right. Choose an MRA folder and a source ROM ZIP folder, then use **Build ROM ZIPs**. Enter your MiSTer IP address to fetch MRAs by FTP or use **Send to MiSTer**. FTP sync updates files in your local MRA folder. Send can delete local and remote ZIPs that fail the current MRA checks; back up important files first. See [known limitations](docs/KNOWN_LIMITATIONS.md) and [testing scope](docs/TESTING.md).
 
 ## 使い方
 
 画面左に設定と操作、右に「実行ログ」「今回追加したZIP」「未生成ZIP」「代替MRAの判定」「不足ROM」のタブを配置しています。「不足ROM」タブは、最新のRunでROMが足りなかったものを、ZIP → MRA → 不足部品(名前とCRC)の順に一覧します。ZIPは、「未生成」(足りないMRAしかなく作れない)と、「生成済み(下のMRAのみ除外)」(ほかのMRAのぶんで作成済み)に分かれます。画面右上の「言語 / Language」で日本語とEnglishを切り替えられます。
 
-入力する項目は次の通りです。IPアドレス・ユーザーID・フォルダー・チェックボックスの状態は、次回起動時も保持されます。パスワードは設定ファイルに書かず、OSの資格情報ストアに保存します。
+入力する項目は次の通りです。IPアドレス・ユーザーID・フォルダー・チェックボックスの状態は、次回起動時も保持されます。GUIのパスワードは設定ファイルに書かず、keyringを通じてOSの資格情報ストアへの保存を試みます。保存できない場合はログに表示し、次回起動時に再入力が必要になります。
 
 - **MiSTerのIPアドレス・ユーザーID・パスワード**: MRAの取得とSendに使います。空欄にすると、保存済みのMRAを使ってローカルだけで処理します。
 - **MRAのローカル保存先**: FTPで取得したMRAもここに保存します。
@@ -57,7 +63,7 @@ Runの後に、「代替MRAの判定」タブと`.local-work\alternative-selecti
 
 ## MAME DAT(任意)
 
-「MAME DAT」欄で、`.dat`またはMAMEの`-listxml`ファイルを選べます。パスは次回起動時も保持します。指定すると、`isbios="yes"`のセット名を読み取り、そのZIPだけを共有BIOSとして統合します。MRAが要求する部品に不足や内容の競合があるときは、統合せず、原因を実行ログに残します。DATを指定しないときは、BIOSの自動判定も統合も行いません。MRAとDATのバージョンが異なっても、名前が一致しないセットを推測でBIOS扱いすることはありません。
+「MAME DAT」欄で、`.dat`またはMAMEの`-listxml`ファイルを選べます。パスは次回起動時も保持します。指定すると、`isbios="yes"`のセット名を読み取り、そのZIPだけを共有BIOSとして扱います。実際に照合できたBIOS部品を統合し、ゲーム側に不足があっても解決済みのBIOS部品は利用します。内容が競合する場合はそのBIOS ZIPの統合を行わず、原因をログに残します。MD5不一致のMRAはBIOSの収集からも除外します。DATを指定しないときは、BIOSの自動判定もBIOS専用の構成照合も行いません。通常の出力ZIPの共有処理は行います。MRAとDATのバージョンが異なっても、名前が一致しないセットを推測でBIOS扱いすることはありません。
 
 DATでBIOSと判定したZIPには、実際にその入力ZIPから読み出したBIOS部品だけを集めます。BIOS候補を含む検索指定だけを理由に、ゲームのROMをBIOS ZIPへ入れることはありません。
 
@@ -67,17 +73,19 @@ DATでBIOSと判定したZIPには、実際にその入力ZIPから読み出し�
 
 ## Sendの動作
 
-Sendは、MiSTerに送る前に、最新のRunで記録したMRAの要求と、`out`の各ZIPの部品名・SHA-1・CRC32・サイズを照合します。Runが途中で止まったり、MRAを変更した後にRunしていなかったりして、記録が古いとき(または無いとき)は、Send全体を中止します。このとき、MiSTerへの接続も、ZIPの削除も行いません。先にRunを実行してください。GUIのSendは、MRAフォルダーのファイルそのものも読み直し、Run後に追加・変更・削除があれば同じく中止します(`send`コマンドはDB上のカタログとだけ照合します)。記録は最新でも、個々のZIPが現在のMRAの要求と一致しないとき(どのMRAも要求しないZIPを含む)は、そのZIPだけを保留し、MiSTerと`out`から削除します。
+Sendは、MiSTerに送る前に、最新のRunで記録したMRAの要求と、`out`の各ZIPの部品名・SHA-1・CRC32・サイズを照合します。送信用記録がない場合や、DB上のMRAカタログと一致しない場合は、Send全体を中止し、MiSTerへの接続やZIPの削除は行いません。先にRunを実行してください。GUIのSendは、選択したMRAフォルダーのファイルも読み直し、Run後の追加・変更・削除や対象選択の変更を検出すると中止します。CLIの`send`はDB上のカタログとの照合だけを行うため、実MRAを変更した場合は必ずRunをやり直してください。
 
-- **同名のZIPが送信先にあるとき**: SHA-1まで照合し、一致すれば再送を省略します。送信先のZIPのSHA-1・サイズ・FTP更新時刻は`.local-work\send-cache.json`に記録します。次回のSendで、この3項目が一致すれば、ZIP全体を読み戻さず、変更があれば再照合します。FTPサーバーが`MDTM`に対応していないときは、毎回全体を読み戻して照合します。
+> **Sendによるファイル削除**: 送信用記録が有効でも、個別のローカルZIPが記録の要求を満たさない場合や、どの対象MRAからも要求されない場合、そのZIPを送信対象から外し、MiSTer上の送信先にある同名ZIPとローカル`out`のZIPの削除を試みます。この削除ではバックアップを作りません。送信先のZIPはローカルZIPと内容が違っていても削除対象です。重要なZIPはSend前に別の場所へ保存してください。CLIの`send --dry-run`で確認する場合も、先にRunで記録を更新してください。
+
+- **同名のZIPが送信先にあるとき**: 初回の確認では送信先ZIPを読み戻し、SHA-1が一致すれば再送を省略します。確認したSHA-1・サイズ・FTP更新時刻は`.local-work\send-cache.json`に記録します。次回は送信先のサイズとFTP更新時刻が記録と一致し、保存済みSHA-1がローカルZIPのSHA-1とも一致すれば、全体を読み戻さず再送を省略します。サイズや更新時刻が変われば再照合します。毎回リモートのSHA-1を取得する方式ではありません。FTPサーバーが`MDTM`に対応していないときは、毎回読み戻して照合します。
 - **内容は違うが、必要なROMが揃っているとき**: 送信先のZIPのバイト列が違っていても(圧縮の有無、メンバーの順序、余分なファイルなどの違い)、現在のMRAが要求するROMがすべて入っていれば、置き換えずに再送を省略します。確認のため、送信先のZIPを一度だけ読み戻して、各メンバーのCRC・SHA-1・サイズを調べます。結果は、送信先のZIPのSHA-1・サイズ・FTP更新時刻と、要求するROMの一覧の指紋を`send-cache.json`に記録します。次回のSendで、この記録と一致すれば、読み戻さずに省略します。MRAの要求が変わったときは、指紋が変わるので、再確認します。Sendの結果では、「再送省略(必要なROMは揃っている)」と表示されます。
-- **内容が違うとき**: 現在のMRAと一致すると検証済みのZIPに限り、一時名でアップロードして検証した後、旧ZIPを`.replaced`へ退避して入れ替えます。失敗したときは、旧ZIPへ戻します。検証できないZIPは、上書きせず保留し、ほかのZIPの送信は続けます。
-- **中断された送信の残りがあるとき**: 通信が切れたときに残った、`.uploading`(送信中の一時ファイル)と`.replaced`(置換前の退避)は、次のSendで自動的に片付けます。
+- **内容が違うとき**: ローカルZIPが送信用記録の要求を満たすと検証済みの場合に、一時名でアップロードし、サイズ・SHA-1を読み戻して検証します。その後、旧ZIPを`.replaced`へ退避して入れ替えます。入れ替えに失敗した場合は旧ZIPへの復旧を試みますが、通信断などで復旧できない場合があります。置換成功後は退避ファイルの削除を試みるため、恒久的なバックアップではありません。
+- **中断された送信の残りがあるとき**: 次のSendでそのZIPを送信する際に、残った`.uploading`の削除を試みます。`.replaced`も置換時や新規送信の完了後に削除を試みます。送信を省略した場合や通信に失敗した場合には残ることがあるため、中断後は送信先の状態を確認してください。
 - **ROMが足りないMRAがあるとき**: ROMが一部足りないMRA(代替MRAなど)は、そのMRAだけを除外して、完成しているMRAのぶんでZIPを作って送ります。除外したMRAと不足ROM(部品名・CRC)は、Sendの結果に表示し、`send-manifest.json`の`excluded`にも記録します。後からROMをプールへ取り込んでRunすると、ZIPが再生成され、次のSendで送信先の同名ZIPを置き換えます。
 
 ## 保存先と出力ファイル
 
-作業ファイルは、すべて`.local-work`に保存します。
+生成したZIP・DB・プール・レポートの既定保存先は`.local-work`です。GUIの設定と保存済みパスワードはOS側に保存され、入力ROMと取得したMRAは利用者が指定したフォルダーにあります。CLIでは作業先を変更できます。
 
 - `out`: 作成したROM ZIP。
 - `arcade.db`、`pool`: 取り込んだROMのデータベースとプール。ROMの実体そのものなので、削除しないでください。
@@ -103,9 +111,29 @@ MRAのMD5は、単純な連結・埋め込み・repeat・offset・lengthを再�
 
 `arcadetool.py`はCLIと一括実行、`arcade_mra.py`はMRA解析とFTP取得、`arcade_pool.py`はROMの登録と照合、`arcade_store.py`はプールのパック保存・検証・復元、`arcade_build.py`はZIP作成と検証、`arcade_bios.py`はDATからのBIOS判定、`arcade_reports.py`は不足レポート、`arcade_transfer.py`はFTP送信、`arcade_common.py`は共通処理を担当します。GUIは、`arcadegui.py`が動作を制御し、`gui_layout.py`が画面配置、`gui_i18n.py`が日本語・英語の表示文言を担当します。テストは、`python -m unittest discover -s tests -v`で実行します。
 
-## 公開時の注意
+## 動作確認と既知の制限
 
-ローカルの`config.json`、`local-data/`、`.local-work/`、ROM・MRA・CHDなどは、`.gitignore`で除外しています。公開前には、`git status --short`と`git ls-files`で、意図しないファイルが含まれていないことを確認してください。FTPは通信を暗号化しないので、信頼できるローカルネットワークで使用してください。
+[動作確認の範囲](docs/TESTING.md)に、自動テストを実行した環境と実機検証を記録するための項目をまとめています。Python 3.10以上という指定は必要条件であり、すべてのOS・Python・FTPサーバーの組み合わせでの動作保証ではありません。
+
+[既知の制限](docs/KNOWN_LIMITATIONS.md)には、MD5検証の対応範囲、GUIとCLIの差、同時実行、保存先、プール修復などを記載しています。[変更履歴](CHANGELOG.md)も参照してください。
+
+## 公開方針 / Support policy
+
+個人用に作成したソフトを、そのまま利用・改変できるように公開しています。問い合わせ、不具合報告、機能追加・修正の依頼、プルリクエストは受け付けていません。必要な変更は各自のフォークで行ってください。サポートや継続的な更新は約束しません。
+
+This is a personal tool shared for use and modification. Support inquiries, bug reports, feature/fix requests, and pull requests are not accepted. Make any changes you need in your own fork. Support and ongoing updates are not promised.
+
+## ライセンス
+
+このプロジェクトのコードと文書は、GNU General Public License version 3のみ(`GPL-3.0-only`)で提供します。全文は[LICENSE](LICENSE)を参照してください。ROM・BIOS・MRA・DAT・コアなど、利用者が用意するデータや外部プロジェクトの著作物には、このライセンスを適用しません。
+
+PyQt6はGPLv3または商用ライセンスで提供されています。[PyQt公式の説明](https://en.riverbankcomputing.com/software/pyqt)を参照してください。依存ライブラリはそれぞれのライセンスに従います。実行ファイルや依存ライブラリを同梱して再配布する場合は、ライセンス文書・著作権表示・対応するソースの提供条件を確認してください。
+
+## 公開時の確認
+
+ローカルの`config.json`、`local-data/`、`.local-work/`、ROM・MRA・CHDなどは、`.gitignore`で除外しています。公開前には、`git status --short`と`git ls-files`で追跡ファイルを確認し、Git履歴・コミット作者のメールアドレス・スクリーンショット・Releases添付ファイルも確認してください。`.gitignore`は過去にコミットしたデータを削除しません。詳細は[公開前チェック](docs/PUBLISHING.md)を参照してください。
+
+FTPは通信を暗号化しません。信頼できるローカルネットワークで使用してください。
 
 ## CLI(調査・保守用)
 
@@ -140,7 +168,7 @@ python arcadetool.py --config config.json transfer --dry-run
 
 - `list`: `plans`に、構成ごとの不足、曖昧なSHA-1候補、選択した出所を出します。`rom index="0"`の複数記述は、代替構成です。
 - `missing`: 不足ROMの名前・期待CRC・探索先ZIPを表示します。ZIPごとに「プールに未登録」か「登録済み・該当ファイルなし」かを示します。`--json`で機械処理用のJSONを出せます。`--zip`は、プールに未登録のZIP候補名だけを、重複なしで表示します。`--output`でUTF-8のテキストに保存できます。
-- `build`: MRA名を指定しないときは、必要なROM構成がそろったタイトルをまとめて作ります。未完成のタイトルは飛ばします。既存のZIPが一致すれば再利用し、異なるときは`errors`に記録して上書きしません。MRA名を指定した`build`は、既存のZIPがあれば停止します。
+- `build`: MRA名を指定しないときは、必要なROM構成がそろったタイトルをまとめて作ります。未完成のタイトルとMD5不一致のMRAは除外します。一括生成では既存ZIPを検証し、必要な部品が不足する場合などはバックアップ後に再構成します。再構成に失敗した場合はエラーを記録します。MRA名を指定した`build`は、既存のZIPがあれば停止します。
 - `pack-pool`: 旧形式のばらファイルをパックZIPへ移します。パックごとに、「ハッシュ確認→パック書き込み→読み直して検証→DB更新」を済ませてから、ばらファイルを削除します。壊れた・欠けたばらファイルは、パックに入れず、削除せずに報告します。`--dry-run`は計画のみ、`--keep-loose`はばらファイルを残します。
 - `verify-pool`: DB上の全ROMを読み戻して確認します。`--quick`はSHA-1の再計算を省略します。問題があれば、内容を表示して、終了コード1で終わります。
 - `rebuild-index`: パックの`manifest.json`から、blobs・origins・パック対応表を復元します。
