@@ -14,6 +14,6 @@
     "sound_root": "/media/fat/_Arcade/sound"
   },
   "output": {
-    "compression": "stored"
+    "compression": "deflate"
   }
 }

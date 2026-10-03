@@ -39,11 +39,11 @@ class GuiTests(unittest.TestCase):
                 self.assertTrue(window.run_button.isEnabled())
                 self.assertTrue(window.send_button.isEnabled())
                 self.assertFalse(window.cancel_button.isEnabled())
-                self.assertIsNotNone(window.japan_alternatives)
+                self.assertIsNotNone(window.home_region_alternatives)
                 self.assertIsNotNone(window.other_region_alternatives)
                 self.assertIsNotNone(window.version_alternatives)
                 self.assertIsNotNone(window.modified_alternatives)
-                self.assertFalse(window.compress_output.isChecked())
+                self.assertFalse(hasattr(window, "compress_output"))
                 self.assertEqual(window.mame_dat.objectName(), "mame_dat")
                 self.assertEqual(window.content_row.indexOf(window.tabs.parentWidget()),1)
                 self.assertEqual(window.tabs.count(),5)
@@ -213,6 +213,39 @@ class GuiTests(unittest.TestCase):
                 self.assertIn("削除", text)
                 self.assertNotIn("a.zip", text)
                 self.assertIn("ROM ZIPを作成", window.status.text())
+                window.deleteLater()
+
+    def test_region_boxes_follow_the_interface_language(self):
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            settings = QSettings(str(work / "settings.ini"), QSettings.Format.IniFormat)
+            with (mock.patch.object(arcadegui, "WORK_DIR", work),
+                  mock.patch.object(arcadegui, "QSettings", return_value=settings)):
+                window = arcadegui.MainWindow()
+                self.assertEqual(window.language, "ja")
+                self.assertTrue(window.home_region_alternatives.isChecked())
+                self.assertEqual(window._alternative_categories(), frozenset({"japan"}))
+                window.other_region_alternatives.setChecked(True)
+                self.assertEqual(window._alternative_categories(),
+                                 frozenset({"japan", "english", "other_region"}))
+                window.other_region_alternatives.setChecked(False)
+                window.language_selector.setCurrentIndex(1)  # English
+                self.assertEqual(window.language, "en")
+                self.assertIn("English-language", window.home_region_alternatives.text())
+                self.assertIn("Japan", window.other_region_alternatives.toolTip())
+                self.assertTrue(window.home_region_alternatives.isChecked())
+                self.assertEqual(window._alternative_categories(), frozenset({"english"}))
+                window.other_region_alternatives.setChecked(True)
+                self.assertEqual(window._alternative_categories(),
+                                 frozenset({"english", "japan", "other_region"}))
+                window.home_region_alternatives.setChecked(False)
+                window.language_selector.setCurrentIndex(0)  # back to Japanese
+                self.assertTrue(window.home_region_alternatives.isChecked())
+                self.assertFalse(window.other_region_alternatives.isChecked())
+                self.assertEqual(window._alternative_categories(), frozenset({"japan"}))
+                window.language_selector.setCurrentIndex(1)
+                self.assertFalse(window.home_region_alternatives.isChecked())
+                self.assertTrue(window.other_region_alternatives.isChecked())
                 window.deleteLater()
 
 
