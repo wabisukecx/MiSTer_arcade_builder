@@ -84,8 +84,11 @@ class BlobStore:
         return self.loose_path(sha1).open("rb")
 
     def has(self, sha1: str) -> bool:
-        """Cheap presence check: a pack mapping or a loose file (no pack read)."""
-        return bool(self.pack_of(sha1)) or self.loose_path(sha1).is_file()
+        """Cheap presence check: the pack file exists or a loose file does (no pack read)."""
+        pack = self.pack_of(sha1)
+        if pack:
+            return (self.pool / pack).is_file()
+        return self.loose_path(sha1).is_file()
 
     def exists(self, sha1: str) -> bool:
         pack = self.pack_of(sha1)

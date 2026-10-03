@@ -59,6 +59,9 @@ class WorkThread(QThread):
                                              dry_run=False, skip_matching=True,
                                              require_mra_match=True,
                                              replace_different=True,
+                                             mra_dir=self.mra_dir,
+                                             mra_categories=arcadetool.selected_categories(
+                                                 False, self.alternative_categories),
                                              cancel_requested=self.isInterruptionRequested,
                                              progress=self.message.emit)
             self.result.emit(result)
@@ -122,8 +125,10 @@ class MainWindow(QMainWindow):
         return label
 
     def _change_language(self, index: int):
+        self._save_region_states()
         self.language = self.language_selector.itemData(index)
         self.settings.setValue("language", self.language)
+        self._load_region_states()
         self._retranslate_ui()
 
     def _retranslate_ui(self):
@@ -141,11 +146,12 @@ class MainWindow(QMainWindow):
         self.rom_dir.setPlaceholderText(self._t("rom_placeholder"))
         self.mame_dat.setPlaceholderText(self._t("dat_placeholder"))
         self.remote_hint.setText(self._t("remote_paths"))
-        self.japan_alternatives.setText(self._t("japan"))
-        self.other_region_alternatives.setText(self._t("other_region"))
+        self.home_region_alternatives.setText(self._t("region_home"))
+        self.other_region_alternatives.setText(self._t("region_other"))
+        self.home_region_alternatives.setToolTip(self._t("tip_region_home"))
+        self.other_region_alternatives.setToolTip(self._t("tip_region_other"))
         self.version_alternatives.setText(self._t("version"))
         self.modified_alternatives.setText(self._t("modified"))
-        self.compress_output.setText(self._t("compress_output"))
         self.open_out.setText(self._t("open"))
         for browse in self._browse_buttons:
             browse.setText(self._t("browse"))
@@ -336,7 +342,7 @@ class MainWindow(QMainWindow):
             return "MRA FTP接続: " + states.get(status, status)
         if line.startswith("Alternative categories: "):
             categories = line.removeprefix("Alternative categories: ")
-            names = {"japan":"日本版", "other_region":"その他の地域", "version":"別バージョン",
+            names = {"japan":"日本版", "english":"英語圏版", "other_region":"その他の地域", "version":"別バージョン",
                      "modified":"改造版", "unclassified":"分類不能", "none":"なし"}
             return "代替MRAの選択分類: " + ", ".join(
                 names.get(item.strip(), item.strip()) for item in categories.split(","))
@@ -374,7 +380,7 @@ class MainWindow(QMainWindow):
     def _render_alternative_list(self):
         if self._alternative_report is None:
             return
-        labels = {"japan":"alt_japan", "other_region":"alt_other_region",
+        labels = {"japan":"alt_japan", "english":"alt_english", "other_region":"alt_other_region",
                   "version":"alt_version", "modified":"alt_modified",
                   "unclassified":"alt_unclassified"}
         self.alternative_list.clear()
@@ -432,14 +438,12 @@ class MainWindow(QMainWindow):
         self.mra_dir.setText(str(self.settings.value("mra_dir", "")))
         self.rom_dir.setText(str(self.settings.value("rom_dir", "")))
         self.mame_dat.setText(str(self.settings.value("mame_dat", "")))
+        self._load_region_states()
         for key, widget, default in (
-            ("japan_alternatives", self.japan_alternatives, True),
-            ("other_region_alternatives", self.other_region_alternatives, False),
             ("version_alternatives", self.version_alternatives, False),
             ("modified_alternatives", self.modified_alternatives, False),
         ):
             widget.setChecked(self.settings.value(key, default, type=bool))
-        self.compress_output.setChecked(self.settings.value("compress_output", False, type=bool))
         self._load_password()
 
     def _load_password(self):
@@ -456,23 +460,49 @@ class MainWindow(QMainWindow):
                             ("mra_dir", self.mra_dir), ("rom_dir", self.rom_dir),
                             ("mame_dat", self.mame_dat)):
             self.settings.setValue(key, widget.text().strip())
+        self._save_region_states()
         for key, widget in (
-            ("japan_alternatives", self.japan_alternatives),
-            ("other_region_alternatives", self.other_region_alternatives),
             ("version_alternatives", self.version_alternatives),
             ("modified_alternatives", self.modified_alternatives),
         ):
             self.settings.setValue(key, widget.isChecked())
-        self.settings.setValue("compress_output", self.compress_output.isChecked())
         self.settings.setValue("language", self.language)
 
     def _alternative_categories(self) -> frozenset[str]:
-        return frozenset(key for key, widget in (
-            ("japan", self.japan_alternatives),
-            ("other_region", self.other_region_alternatives),
-            ("version", self.version_alternatives),
-            ("modified", self.modified_alternatives),
-        ) if widget.isChecked())
+        # The region boxes follow the interface language: with Japanese the first box is the
+        # Japan edition and the second every other region; with English they are swapped.
+        if self.language == "ja":
+            home, other = {"japan"}, {"english", "other_region"}
+        else:
+            home, other = {"english"}, {"japan", "other_region"}
+        categories = set()
+        if self.home_region_alternatives.isChecked():
+            categories |= home
+        if self.other_region_alternatives.isChecked():
+            categories |= other
+        if self.version_alternatives.isChecked():
+            categories.add("version")
+        if self.modified_alternatives.isChecked():
+            categories.add("modified")
+        return frozenset(categories)
+
+    def _region_key(self, which: str, language: str | None = None) -> str:
+        return f"region_{which}/{language or self.language}"
+
+    def _load_region_states(self):
+        """Each language remembers its own region choice; Japanese keeps the old settings."""
+        legacy = self.language == "ja"
+        self.home_region_alternatives.setChecked(self.settings.value(
+            self._region_key("home"),
+            self.settings.value("japan_alternatives", True, type=bool) if legacy else True, type=bool))
+        self.other_region_alternatives.setChecked(self.settings.value(
+            self._region_key("other"),
+            self.settings.value("other_region_alternatives", False, type=bool) if legacy else False,
+            type=bool))
+
+    def _save_region_states(self):
+        self.settings.setValue(self._region_key("home"), self.home_region_alternatives.isChecked())
+        self.settings.setValue(self._region_key("other"), self.other_region_alternatives.isChecked())
 
     def _save_password(self):
         if keyring is not None and self.password.text():
@@ -554,7 +584,6 @@ class MainWindow(QMainWindow):
         self._save_password()
         config = {
             "mame_dat": dat_text,
-            "output": {"compression": "deflate" if self.compress_output.isChecked() else "stored"},
             "mister": {"host": host, "port": 21, "username": username,
                        "password": self.password.text(), "mra_root": MRA_REMOTE},
             "transfer": {"rom_root": ROM_REMOTE,

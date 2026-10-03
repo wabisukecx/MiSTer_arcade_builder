@@ -10,6 +10,7 @@ import tempfile
 import zipfile
 from arcade_build import verify_zip
 from arcade_common import CHUNK, canonical_zip, check_cancel, digest_file
+from arcade_mra import mra_files_match_catalog
 
 
 class CancellableReader:
@@ -52,7 +53,9 @@ def _remember_send_cache(work, entries):
 
 def _members_signature(members):
     """Stable fingerprint of the ROM members a ZIP must contain."""
-    rows = sorted([m["name"], m["sha1"], m["crc32"], m["size"]] for m in members)
+    rows = sorted([m["name"], m["sha1"], m["crc32"], m["size"]] +
+                  (["by-name"] if "lookup_crc32" in m and not m["lookup_crc32"] else [])
+                  for m in members)
     return hashlib.sha1(json.dumps(rows, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
@@ -140,7 +143,7 @@ def _delete_held_entry(ftp, entry, work, cache, server, progress, cancel_request
         _remember_send_cache(work, cache)
     progress(f"保留ZIP削除完了: {dest} (out=削除, FTP={remote})")
 
-def current_mra_requirements(db, work):
+def current_mra_requirements(db, work, mra_dir=None, mra_categories=None, cancel_requested=None):
     """Load Run's requirements only when they match the current MRA catalog."""
     path = work / "send-manifest.json"
     if not path.is_file():
@@ -153,6 +156,9 @@ def current_mra_requirements(db, work):
         "SELECT relative_path,file_sha1 FROM mras WHERE status IN ('parsed','corrected') ORDER BY relative_path")]
     if manifest.get("catalog") != catalog:
         return {}, {}, "MRA catalog changed; Run is required before Send"
+    if mra_dir is not None and not mra_files_match_catalog(
+            db, Path(mra_dir), frozenset(mra_categories or ()), cancel_requested):
+        return {}, {}, "MRA files changed since Run; Run is required before Send"
     return manifest["required"], manifest["blocked"], None
 
 
@@ -167,7 +173,8 @@ def current_mra_exclusions(work):
 
 
 def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_match=False,
-             cancel_requested=None, progress=None, replace_different=False):
+             cancel_requested=None, progress=None, replace_different=False,
+             mra_dir=None, mra_categories=None):
     progress = progress or (lambda message: None)
     check_cancel(cancel_requested)
     t={**config.get("mister",{}),**config.get("transfer",{})}
@@ -175,7 +182,8 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
         raise ValueError("only FTP is supported")
     entries=[]
     member_needs = {}
-    required, blocked, manifest_error = current_mra_requirements(db, work) if require_mra_match else ({}, {}, None)
+    required, blocked, manifest_error = current_mra_requirements(
+        db, work, mra_dir, mra_categories, cancel_requested) if require_mra_match else ({}, {}, None)
     exclusions = current_mra_exclusions(work) if require_mra_match and manifest_error is None else {}
     for p in sorted((work/"out").rglob("*.zip")) if (work/"out").exists() else []:
         check_cancel(cancel_requested)
@@ -240,11 +248,20 @@ def transfer(db, work, config, dry_run=True, skip_matching=False, require_mra_ma
             progress(f"送信先を確認中: {dest}")
             parent,name=dest.rsplit("/",1)
             if current_dir != parent or parent not in listings:
-                _ensure_remote_directory(ftp, parent)
+                folder_exists = True
+                if dry_run:
+                    # A dry run must not create anything on the MiSTer.
+                    try:
+                        ftp.cwd(parent)
+                    except ftplib.error_perm:
+                        folder_exists = False
+                else:
+                    _ensure_remote_directory(ftp, parent)
                 current_dir = parent
                 if parent not in listings:
                     # One listing per folder is enough; Send keeps it current as it changes files.
-                    listings[parent] = {PurePosixPath(x).name for x in ftp.nlst()}
+                    listings[parent] = ({PurePosixPath(x).name for x in ftp.nlst()}
+                                        if folder_exists else set())
                     ftp.voidcmd("TYPE I")
             names = listings[parent]
             e["collision"]="existing" if name in names else "none"

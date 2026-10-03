@@ -482,6 +482,48 @@ class BuilderTests(unittest.TestCase):
         result = a.build(self.db, self.work, "MD5.mra")
         self.assertEqual(result["plans"][0]["md5_status"], "matched")
 
+    def test_md5_mismatch_mra_is_excluded_from_output_and_send(self):
+        self.zip("a", "one.zip", {"x": b"abc", "y": b"def"})
+        good = hashlib.md5(b"abc").hexdigest()
+        self.mra("Good.mra", f'<rom index="0" zip="one.zip" md5="{good}"><part name="x" crc="{crc(b"abc")}"/></rom>')
+        self.mra("Bad.mra", f'<rom index="0" zip="bad.zip|one.zip" md5="{"0" * 32}"><part name="y" crc="{crc(b"def")}"/></rom>')
+        a.scan_mras(self.db, self.work) if hasattr(a, "scan_mras") else None
+        result = a.build_ready(self.db, self.work)
+        self.assertEqual([e["mra"] for e in result["errors"]], ["Bad.mra"])
+        manifest = json.loads((self.work / "send-manifest.json").read_text(encoding="utf-8"))
+        names = {m["name"] for m in manifest["required"].get("one.zip", [])}
+        self.assertEqual(names, {"x"})
+        self.assertEqual(manifest["blocked"], {})
+        with zipfile.ZipFile(self.work / "out" / "one.zip") as z:
+            self.assertEqual(z.namelist(), ["x"])
+        self.assertIn("MD5不一致", json.dumps(manifest["excluded"], ensure_ascii=False))
+
+    def test_name_only_part_is_not_satisfied_by_same_bytes_under_another_name(self):
+        data = b"abc"
+        sha1 = hashlib.sha1(data).hexdigest()
+        by_name = {"name": "x", "sha1": sha1, "crc32": crc(data), "size": 3, "lookup_crc32": None}
+        by_crc = {"name": "x", "sha1": sha1, "crc32": crc(data), "size": 3, "lookup_crc32": crc(data)}
+        path = self.base / "alias.zip"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("renamed", data)
+        with self.assertRaises(ValueError):
+            a.verify_zip(path, [by_name])
+        a.verify_zip(path, [by_crc])
+        with zipfile.ZipFile(path, "a") as z:
+            z.writestr("x", data)
+        a.verify_zip(path, [by_name])
+
+    def test_reingest_restores_blob_whose_pack_file_is_missing(self):
+        path = self.zip("a", "one.zip", {"x": b"abc"})
+        sha1 = hashlib.sha1(b"abc").hexdigest()
+        pack = self.db.execute("SELECT pack FROM blob_packs WHERE sha1=?", (sha1,)).fetchone()[0]
+        (self.work / "pool" / pack).unlink()
+        os.utime(path, (path.stat().st_atime + 10, path.stat().st_mtime + 10))
+        result = a.ingest(self.db, self.work, [path])
+        self.assertEqual(result["new_blobs"], 1)
+        with a.BlobStore(self.db, self.work) as store:
+            self.assertTrue(store.exists(sha1))
+
     def test_ingest_rejects_archive_over_size_or_member_limits(self):
         import arcade_pool
         big = self.base / "big.zip"
@@ -704,6 +746,48 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(result["entries"][0]["action"], "uploaded")
         self.assertIn("/media/fat/_Arcade/sound", FakeFTP.dirs)
 
+    def test_dry_run_does_not_create_remote_directories(self):
+        out = self.work / "out" / "sound"
+        out.mkdir(parents=True)
+        (out / "journey.zip").write_bytes(b"zip data")
+
+        class FakeFTP:
+            dirs = {"/", "/media", "/media/fat"}
+            current = "/"
+            made = []
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def connect(self, *args, **kwargs): pass
+            def login(self, *args, **kwargs): pass
+            def voidcmd(self, *args): pass
+            def cwd(self, path):
+                target = path if path.startswith("/") else self.current.rstrip("/") + "/" + path
+                if target not in self.dirs:
+                    raise a.ftplib.error_perm("550 no such directory")
+                self.current = target
+            def mkd(self, name): self.made.append(name)
+            def nlst(self): return []
+
+        with mock.patch.object(a.ftplib, "FTP", FakeFTP):
+            a.transfer(self.db, self.work, {"mister":{"host":"example.test"},
+                                            "transfer":{"sound_root":"/media/fat/_Arcade/sound"}},
+                       dry_run=True, skip_matching=True)
+        self.assertEqual(FakeFTP.made, [])
+
+    def test_send_is_blocked_when_mra_files_changed_after_run(self):
+        self.zip("a", "one.zip", {"x": b"abc"})
+        self.mra("A.mra", f'<rom index="0" zip="one.zip"><part name="x" crc="{crc(b"abc")}"/></rom>')
+        a.build_ready(self.db, self.work)
+        self.assertTrue(a.mra_files_match_catalog(self.db, self.mras, frozenset()))
+        # Edited or added on disk after Run: the catalog has not seen it yet.
+        (self.mras / "A.mra").write_text("<misterromdescription><name>A2</name></misterromdescription>")
+        self.assertFalse(a.mra_files_match_catalog(self.db, self.mras, frozenset()))
+        result = a.transfer(self.db, self.work, {"mister": {"host": "example.test"}}, dry_run=False,
+                            skip_matching=True, require_mra_match=True,
+                            mra_dir=self.mras, mra_categories=frozenset())
+        self.assertIn("MRA files changed", result["blocked_reason"])
+        self.assertTrue(all(e["action"] == "conflict" for e in result["entries"]))
+
     def test_cancel_during_ftp_upload_removes_temporary_remote_file(self):
         out = self.work / "out"
         out.mkdir()
@@ -880,15 +964,15 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(second["built"], [])
         self.assertEqual([Path(p).name for p in second["already_present"]], ["ready.zip"])
 
-    def test_output_compression_option_stored_default_and_deflate(self):
+    def test_output_zips_are_deflated_by_default_and_stored_on_request(self):
         import arcade_build
         payload = b"A" * 4096
         self.zip("a", "ready.zip", {"x": payload})
         self.mra("Ready.mra", f'<rom index="0" zip="ready.zip"><part name="x" crc="{crc(payload)}"/></rom>')
-        self.addCleanup(arcade_build.set_output_compression, "stored")
+        self.addCleanup(arcade_build.set_output_compression, None)
         with self.assertRaises(ValueError):
             arcade_build.set_output_compression("zstd")
-        arcade_build.set_output_compression("deflate")
+        arcade_build.set_output_compression(None)
         a.build_ready(self.db, self.work)
         path = self.work / "out" / "ready.zip"
         with zipfile.ZipFile(path) as z:
@@ -897,7 +981,7 @@ class BuilderTests(unittest.TestCase):
             self.assertLess(info.compress_size, info.file_size)
             self.assertEqual(z.read("x"), payload)
         path.unlink()
-        arcade_build.set_output_compression(None)
+        arcade_build.set_output_compression("stored")
         a.build_ready(self.db, self.work)
         with zipfile.ZipFile(path) as z:
             self.assertEqual(z.getinfo("x").compress_type, zipfile.ZIP_STORED)
@@ -1096,6 +1180,19 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(len(report["files"]),6)
         self.assertEqual(sum(row["selected"] for row in report["files"]),2)
         self.assertEqual(a.alternative_category("Game (Japan, bootleg).mra"),"modified")
+
+    def test_region_variants_are_split_into_english_and_other_regions(self):
+        self.assertEqual(a.alternative_category("Game (World).mra"), "english")
+        self.assertEqual(a.alternative_category("Game (US, rev 1).mra"), "english")
+        self.assertEqual(a.alternative_category("Game (Europe).mra"), "english")
+        self.assertEqual(a.alternative_category("Game (Korea).mra"), "other_region")
+        self.assertEqual(a.alternative_category("Game (Japan, World).mra"), "japan")
+        self.assertEqual(a.alternative_category("Game (World, bootleg).mra"), "modified")
+        self.assertEqual(a.alternative_category(
+            "Mystery.mra", b'<misterromdescription><region>USA</region></misterromdescription>'), "english")
+        self.assertIn("english", a.ALTERNATIVE_CATEGORIES)
+        self.assertEqual(a.alternative_category(
+            "Game (World).mra", b'<misterromdescription><region>Japan</region></misterromdescription>'), "japan")
 
     def test_japan_zip_pair_requires_preferred_child_and_parent(self):
         def raw(spec):

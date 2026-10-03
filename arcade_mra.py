@@ -14,10 +14,11 @@ from arcade_common import CHUNK, check_cancel, digest_file, safe_name, normalize
 
 FIXABLE = {"Space Demon.mra", "Space Firebird.mra"}
 TAG = re.compile(rb"(<\s*/?\s*)([A-Za-z][A-Za-z0-9_-]*)(?=[\s/>])")
-ALTERNATIVE_CATEGORIES = frozenset({"japan", "other_region", "version", "modified", "unclassified"})
+ALTERNATIVE_CATEGORIES = frozenset({"japan", "english", "other_region", "version", "modified", "unclassified"})
 JAPAN_MARKER = re.compile(r"(?i)(?<![a-z])(?:japan(?:ese)?|jp)(?![a-z])|日本|[\[(]j[\])]|\b(?:version|ver\.?)\s*j\b")
 MODIFIED_MARKER = re.compile(r"(?i)\b(?:hack|hacked|bootleg|homebrew|patch|patched|fix|fixed|cheat|trainer|decrypted|translation|mod(?:ified)?)\b")
-OTHER_REGION_MARKER = re.compile(r"(?i)\b(?:usa?|us|europe|eur|world|asia|korea|korean|china|chinese|taiwan|hong\s*kong|germany|german|france|french|spain|spanish|italy|italian|uk|australia|brazil|russia)\b")
+ENGLISH_MARKER = re.compile(r"(?i)\b(?:usa?|us|uk|united\s+kingdom|world|europe|european|eur|australia|english)\b")
+OTHER_REGION_MARKER = re.compile(r"(?i)\b(?:asia|korea|korean|china|chinese|taiwan|hong\s*kong|germany|german|france|french|spain|spanish|italy|italian|brazil|russia)\b")
 VERSION_MARKER = re.compile(r"(?i)\b(?:version|ver\.?|revision|rev\.?|set|prototype|proto|beta|alpha|alternate|alternative|older|newer|v\d+)\b")
 
 def japan_zip_pair(root: ET.Element) -> bool:
@@ -57,13 +58,18 @@ def alternative_category(relative: str | PurePosixPath, raw: bytes | None = None
             pass
     if JAPAN_MARKER.search(stem):
         return "japan"
-    if OTHER_REGION_MARKER.search(stem):
-        return "other_region"
+    # Explicit MRA metadata saying Japan outranks a World/US/other-region file name.
     if root is not None and (JAPAN_MARKER.search(root.findtext("region") or "")
                              or JAPAN_MARKER.search(root.findtext("name") or "")
                              or japan_zip_pair(root)
                              or japan_setname_parent(root)):
         return "japan"
+    if ENGLISH_MARKER.search(stem):
+        return "english"
+    if OTHER_REGION_MARKER.search(stem):
+        return "other_region"
+    if root is not None and ENGLISH_MARKER.search(root.findtext("region") or ""):
+        return "english"
     if VERSION_MARKER.search(stem):
         return "version"
     return "unclassified"
@@ -117,6 +123,19 @@ def parse_tree(raw: bytes, filename: str):
             raise
         fixed = TAG.sub(lambda m: m.group(1) + m.group(2).lower(), raw)
         return ET.fromstring(fixed), "corrected"
+
+def mra_files_match_catalog(db, root: Path, categories, cancel_requested=None) -> bool:
+    """True when the MRA files Run would read are exactly the catalogued ones (same content)."""
+    paths = sorted(root.rglob("*.mra") if categories else root.glob("*.mra"))
+    current = {}
+    for path in paths:
+        check_cancel(cancel_requested)
+        rel = path.relative_to(root).as_posix()
+        if selected_mra(rel, categories, path.read_bytes()):
+            current[rel] = digest_file(path, cancel_requested=cancel_requested)
+    catalog = {row["relative_path"]: row["file_sha1"] for row in db.execute(
+        "SELECT relative_path,file_sha1 FROM mras")}
+    return current == catalog
 
 def scan_mras(db, root: Path, recursive=True, prune_unseen=False, alternative_categories=None,
               cancel_requested=None):

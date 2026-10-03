@@ -16,12 +16,12 @@ from arcade_pool import OriginIndex, is_external, output_zip_for_part, part_rows
 from arcade_store import BlobStore
 
 _COMPRESSION = {"stored": zipfile.ZIP_STORED, "deflate": zipfile.ZIP_DEFLATED}
-_output_compression = zipfile.ZIP_STORED
+_output_compression = zipfile.ZIP_DEFLATED
 
 def set_output_compression(mode):
-    """Select how newly built output ZIPs are compressed ('stored' or 'deflate')."""
+    """Select how newly built output ZIPs are compressed ('deflate' by default, or 'stored')."""
     global _output_compression
-    mode = (mode or "stored")
+    mode = (mode or "deflate")
     if not isinstance(mode, str) or mode.lower() not in _COMPRESSION:
         raise ValueError(f"output.compression must be 'stored' or 'deflate': {mode!r}")
     _output_compression = _COMPRESSION[mode.lower()]
@@ -161,18 +161,26 @@ def assembled_md5(db, work, rom_id, plan, cancel_requested=None, store=None):
     actual = h.hexdigest()
     return ("matched" if actual.lower() == expected.lower() else "mismatch"),actual
 
+def check_md5(db, work, plans, cancel_requested=None, store=None):
+    """Verify the assembled MD5 of each plan; return an error message on a real mismatch."""
+    for p in plans:
+        p["md5_status"],p["md5_actual"] = assembled_md5(db,work,p["rom_id"],p,cancel_requested,store)
+        if p["md5_status"] == "mismatch":
+            return f"assembled MD5 mismatch for rom {p['rom_id']}: {p['md5_actual']}"
+    return None
+
 def build(db, work, mra_name, skip_existing=False, plan_cache=None, cross_claims=None,
           progress=None, cancel_requested=None, origin_index=None,
-          shared_outputs=None, shared_errors=None, store=None):
+          shared_outputs=None, shared_errors=None, store=None, md5_verified=False):
     if store is None:
         with BlobStore(db, work) as own_store:
             return build(db, work, mra_name, skip_existing, plan_cache, cross_claims, progress,
-                         cancel_requested, origin_index, shared_outputs, shared_errors, own_store)
+                         cancel_requested, origin_index, shared_outputs, shared_errors, own_store, md5_verified)
     return _build(db, work, mra_name, skip_existing, plan_cache, cross_claims, progress,
-                  cancel_requested, origin_index, shared_outputs, shared_errors, store)
+                  cancel_requested, origin_index, shared_outputs, shared_errors, store, md5_verified)
 
 def _build(db, work, mra_name, skip_existing, plan_cache, cross_claims, progress,
-           cancel_requested, origin_index, shared_outputs, shared_errors, store):
+           cancel_requested, origin_index, shared_outputs, shared_errors, store, md5_verified=False):
     progress = progress or (lambda message: None)
     check_cancel(cancel_requested)
     rows = db.execute("SELECT * FROM mras WHERE relative_path=? OR title=? OR setname=? OR relative_path LIKE ?",
@@ -204,11 +212,11 @@ def _build(db, work, mra_name, skip_existing, plan_cache, cross_claims, progress
     # Same-name ROM variants are valid when their CRCs differ; the MRA loader
     # selects the required bytes by CRC. build_ready supplies a union across MRAs.
     # A real MRA MD5 mismatch means the chosen bytes are wrong. Leave no completed ZIP.
-    progress(f"MRAのハッシュ検証中: {mra['relative_path']}")
-    for p in ready:
-        p["md5_status"],p["md5_actual"] = assembled_md5(db,work,p["rom_id"],p,cancel_requested,store)
-        if p["md5_status"] == "mismatch":
-            raise ValueError(f"assembled MD5 mismatch for rom {p['rom_id']}: {p['md5_actual']}")
+    # build_ready verifies this before sharing ZIPs and passes md5_verified=True.
+    if not md5_verified:
+        progress(f"MRAのハッシュ検証中: {mra['relative_path']}")
+        error = check_md5(db, work, ready, cancel_requested, store)
+        if error: raise ValueError(error)
     outputs = {}
     for (target,_,_),item in output_claims.items(): outputs.setdefault(target,[]).append(item)
     for target in outputs:
@@ -289,6 +297,21 @@ def _build_ready(db, work, progress, cancel_requested, origin_index, plan_cache,
     # Build each output ZIP from the union of the selected MRA parts that were
     # actually found in that source ZIP. ZIP search alternatives are not all
     # destinations, and a BIOS candidate is not proof that a part is BIOS data.
+    # An MRA whose assembled MD5 does not match chose the wrong bytes. Check this before
+    # any shared ZIP is written so such an MRA contributes nothing to the output or Send.
+    md5_failed = set()
+    verified = []
+    for index, mra in enumerate(ready_mras, 1):
+        check_cancel(cancel_requested)
+        progress(f"MRAのハッシュ検証中 ({index}/{len(ready_mras)}): {mra['relative_path']}")
+        error = check_md5(db, work, plan_cache[mra["id"]], cancel_requested, store)
+        if error:
+            md5_failed.add(mra["id"])
+            result["errors"].append({"mra":mra["relative_path"],"error":error})
+            progress(f"MD5不一致のため除外: {mra['relative_path']}: {error}")
+        else:
+            verified.append(mra)
+    ready_mras = verified
     shared_outputs = {}
     shared_errors = {}
     for mra in ready_mras:
@@ -338,7 +361,7 @@ def _build_ready(db, work, progress, cancel_requested, origin_index, plan_cache,
             item = build(db,work,mra["relative_path"],skip_existing=True,
                          plan_cache=plan_cache,progress=progress,
                          cancel_requested=cancel_requested,shared_outputs=shared_outputs,
-                         shared_errors=shared_errors,store=store)
+                         shared_errors=shared_errors,store=store,md5_verified=True)
             result["built"].extend(item["built"])
             result["already_present"].extend(item["already_present"])
         except (ValueError,OSError,sqlite3.Error,zipfile.BadZipFile) as exc:
@@ -348,10 +371,10 @@ def _build_ready(db, work, progress, cancel_requested, origin_index, plan_cache,
     result["already_present"] = sorted(set(result["already_present"]) - set(result["built"]))
     check_cancel(cancel_requested)
     progress("送信用ZIPリストを更新しています")
-    save_send_manifest(work, mras, plan_cache, db)
+    save_send_manifest(work, mras, plan_cache, db, md5_failed)
     return result
 
-def save_send_manifest(work, mras, plan_cache, db):
+def save_send_manifest(work, mras, plan_cache, db, md5_failed=()):
     """Save the current MRA member requirements for a fast, safe Send check.
 
     Only MRAs that are fully resolved (the ones Run builds from) define what a ZIP
@@ -364,7 +387,8 @@ def save_send_manifest(work, mras, plan_cache, db):
     selectors = {}
     for mra in mras:
         plans = plan_cache[mra["id"]]
-        is_ready = bool(plans) and not any(p["missing"] or p["ambiguous"] or p["unsupported"] for p in plans)
+        is_ready = (bool(plans) and mra["id"] not in md5_failed and
+                    not any(p["missing"] or p["ambiguous"] or p["unsupported"] for p in plans))
         for plan in plans:
             selected = {item["part"]: item for item in plan["selected_parts"]}
             for part in part_rows(db, plan["rom_id"]):
@@ -375,7 +399,12 @@ def save_send_manifest(work, mras, plan_cache, db):
                 if not target:
                     continue
                 if not is_ready:
-                    if item is None:
+                    if mra["id"] in md5_failed:
+                        label = "MD5不一致"
+                        names = excluded.setdefault(target, {}).setdefault(mra["relative_path"], [])
+                        if label not in names:
+                            names.append(label)
+                    elif item is None:
                         label = part["name"] or "(unnamed)"
                         if part["crc32"]:
                             label += f" (CRC {part['crc32']})"
@@ -395,6 +424,8 @@ def save_send_manifest(work, mras, plan_cache, db):
                     key = (item["name"], item["sha1"])
                     members[key] = {"name": item["name"], **{
                         key: item[key] for key in ("sha1", "crc32", "size")}}
+                    if not item.get("lookup_crc32"):
+                        members[key]["lookup_crc32"] = None
     manifest = {"catalog": [[mra["relative_path"], mra["file_sha1"]] for mra in mras],
                 "required": {target: list(members.values()) for target, members in required.items()},
                 "blocked": blocked,
@@ -424,9 +455,12 @@ def verify_zip(path, members, cancel_requested=None, exact=False):
         for item in members:
             name = item["name"]
             wanted_crc = item.get("crc32")
+            # The MiSTer loader finds a part named without a CRC by file name, so the
+            # same bytes stored under another name do not satisfy it.
+            by_name = not wanted_crc or ("lookup_crc32" in item and not item["lookup_crc32"])
             candidates = [info for info in infos if
-                          (wanted_crc and info.CRC == int(wanted_crc, 16)) or
-                          (not wanted_crc and info.filename == name)]
+                          ((info.filename == name) if by_name else
+                           (info.CRC == int(wanted_crc, 16)))]
             matched = False
             for info in candidates:
                 h=hashlib.sha1(); crc=0; size=0

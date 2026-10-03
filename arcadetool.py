@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from arcade_common import (CHUNK, MAX_MEMBER, OperationCancelled, archive_matches,
                            canonical_zip, check_cancel, digest_file, normalize_crc, safe_name)
-from arcade_mra import (FIXABLE, TAG, ALTERNATIVE_CATEGORIES, JAPAN_MARKER, MODIFIED_MARKER, OTHER_REGION_MARKER, VERSION_MARKER,
+from arcade_mra import (mra_files_match_catalog, FIXABLE, TAG, ALTERNATIVE_CATEGORIES, JAPAN_MARKER, MODIFIED_MARKER, ENGLISH_MARKER, OTHER_REGION_MARKER, VERSION_MARKER,
                         japan_zip_pair, japan_setname_parent, alternative_category, selected_categories, selected_mra,
                         connect, parse_tree, scan_mras, ftp_mra_files, sync_mras_ftp)
 from arcade_pool import (OriginIndex, ingest, part_rows, is_external, choices, rom_plan,
@@ -152,7 +152,10 @@ def main(argv=None):
                    help="include every _alternatives MRA, including unclassified files")
     p.add_argument("--japan-alternatives",action="store_true",
                    help="include variants identified as Japanese-region by title, MRA metadata, or ROM set names")
-    p.add_argument("--other-region-alternatives",action="store_true")
+    p.add_argument("--english-alternatives",action="store_true",
+                   help="include variants for English-language regions (US, World, Europe, UK, Australia)")
+    p.add_argument("--other-region-alternatives",action="store_true",
+                   help="include variants for all other regions, English-language ones as well")
     p.add_argument("--version-alternatives",action="store_true")
     p.add_argument("--modified-alternatives",action="store_true")
     p.add_argument("--unclassified-alternatives",action="store_true")
@@ -182,6 +185,7 @@ def main(argv=None):
         if args.cmd=="run":
             categories = {key for key, enabled in (
                 ("japan", args.japan_alternatives),
+                ("english", args.english_alternatives or args.other_region_alternatives),
                 ("other_region", args.other_region_alternatives),
                 ("version", args.version_alternatives),
                 ("modified", args.modified_alternatives),

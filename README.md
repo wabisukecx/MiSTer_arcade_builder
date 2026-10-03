@@ -31,7 +31,6 @@ English quick start: install with `python -m pip install ".[gui]"`, then run `py
 - **元ROMフォルダー**: ROMのZIPがあるフォルダーです。
 - **代替MRA**: `_alternatives`の代替MRAのうち、どれを対象にするかを選びます。標準MRAは常に対象です。
 - **MAME DAT**: 任意です。後の節を参照してください。
-- **出力ZIP**: 「圧縮する」チェックボックスです。後の節を参照してください。
 
 操作は次の3つです。
 
@@ -43,9 +42,16 @@ English quick start: install with `python -m pip install ".[gui]"`, then run `py
 
 ## 代替MRAの選択
 
-`_alternatives`の代替MRAは、「地域違い：日本版と判定」「地域違い：その他」「別バージョン」「改造版・非公式版」に分けて選べます。初期設定は、日本版と判定されたものだけです。分類できない代替MRAは、GUIでは対象外です。
+`_alternatives`の代替MRAは、「地域違い」の2つと、「別バージョン」「改造版・非公式版」に分けて選べます。標準MRAは、常に対象です。初期設定は、日本語表示では「地域違い：日本版と判定されたもの」だけです。分類できない代替MRAは、GUIでは対象外です。
 
-分類には、MRAのファイル名、MRA内の地域表記、セット名と親セット名、ROM ZIPの候補を使います。`Japan`、`Japanese`、`JP`、`日本`、`(J)`、`version J`などの表記を日本版として扱います。`klaxj3.zip|klax.zip`のように、先頭のZIP名が親のZIP名に`j`と数字を付けた形のときも、日本版と判定します。`Bagman (Taito).mra`のように、`setname`が`parent`に`j`を付けた形で、そのZIPが候補に含まれるときも同様です。ZIP名に単に`j`があるだけでは判定しません。`bootleg`、`hack`、`patch`などは、改造版を優先します。日本版でも、画面内の言語が日本語とは限りません。
+「地域違い」の2つは、表示言語に合わせて意味が変わります。
+
+- **日本語表示**: 1つ目が日本版、2つ目が「その他の地域」(英語圏を含む)です。
+- **English表示**: 1つ目が英語圏版(US・World・Europe・UK・Australia)、2つ目が「その他の地域」(日本を含む)です。
+
+言語を切り替えると、その言語で最後に選んでいた状態に切り替わります(言語ごとに別々に保存します)。選択が変わると、作られるZIPの内容も変わるので、切り替えた後は、設定を確認してからZIPを作成してください。
+
+分類には、MRAのファイル名、MRA内の地域表記、セット名と親セット名、ROM ZIPの候補を使います。日本版は、`Japan`、`Japanese`、`JP`、`日本`、`(J)`、`version J`などの表記で判定します。`klaxj3.zip|klax.zip`のように、先頭のZIP名が親のZIP名に`j`と数字を付けた形のときも、日本版と判定します。`Bagman (Taito).mra`のように、`setname`が`parent`に`j`を付けた形で、そのZIPが候補に含まれるときも同様です。ZIP名に単に`j`があるだけでは判定しません。英語圏版は、`USA`、`US`、`World`、`Europe`、`UK`、`Australia`、`English`などの表記で判定します。日本版の表記を先に調べるので、`Japan`と`World`の両方を含む名前は、日本版です。`bootleg`、`hack`、`patch`などは、改造版を優先します。日本版でも、画面内の言語が日本語とは限りません。
 
 Runの後に、「代替MRAの判定」タブと`.local-work\alternative-selection-report.json`で、分類と選択の結果を確認できます。
 
@@ -57,13 +63,11 @@ DATでBIOSと判定したZIPには、実際にその入力ZIPから読み出し�
 
 ## 出力ZIPの圧縮
 
-「出力ZIP」の「圧縮する」チェックボックスで、新しく作るZIPを圧縮するかを選びます。既定はオフ(無圧縮)です。無圧縮のZIPは、同じ中身から常に同じバイト列ができるので、Sendの内容一致判定が安定します。圧縮すると、ZIPが小さくなり、転送量とMiSTer側の容量が減ります。
-
-変更が反映されるのは、新しく作るZIPだけです。作成済みのZIPは、そのまま再利用されます。既存のZIPも作り直したいときは、`.local-work\out`の該当ZIPを退避してからRunしてください。作り直したZIPは、SHA-1が変わるので、次のSendで置換送信になります。
+新しく作る出力ZIPは、標準で圧縮(deflate)します。作成済みのZIPは、そのまま再利用されるので、以前に作った無圧縮のZIPは、作り直すまで無圧縮のままです。作り直したいときは、`.local-work\out`の該当ZIPを退避してから「ROM ZIPを作成」を実行してください。ZIPのバイト列が変わっても、送信先のZIPに必要なROMが揃っていれば、置換送信にはなりません(Sendの動作を参照)。GUIに圧縮の設定はありません。CLIでは、`config.json`の`"output": {"compression": "stored"}`で、無圧縮にできます。
 
 ## Sendの動作
 
-Sendは、MiSTerに送る前に、最新のRunで記録したMRAの要求と、`out`の各ZIPの部品名・SHA-1・CRC32・サイズを照合します。Runが途中で止まったり、MRAを変更した後にRunしていなかったりして、記録が古いとき(または無いとき)は、Send全体を中止します。このとき、MiSTerへの接続も、ZIPの削除も行いません。先にRunを実行してください。記録は最新でも、個々のZIPが現在のMRAの要求と一致しないとき(どのMRAも要求しないZIPを含む)は、そのZIPだけを保留し、MiSTerと`out`から削除します。
+Sendは、MiSTerに送る前に、最新のRunで記録したMRAの要求と、`out`の各ZIPの部品名・SHA-1・CRC32・サイズを照合します。Runが途中で止まったり、MRAを変更した後にRunしていなかったりして、記録が古いとき(または無いとき)は、Send全体を中止します。このとき、MiSTerへの接続も、ZIPの削除も行いません。先にRunを実行してください。GUIのSendは、MRAフォルダーのファイルそのものも読み直し、Run後に追加・変更・削除があれば同じく中止します(`send`コマンドはDB上のカタログとだけ照合します)。記録は最新でも、個々のZIPが現在のMRAの要求と一致しないとき(どのMRAも要求しないZIPを含む)は、そのZIPだけを保留し、MiSTerと`out`から削除します。
 
 - **同名のZIPが送信先にあるとき**: SHA-1まで照合し、一致すれば再送を省略します。送信先のZIPのSHA-1・サイズ・FTP更新時刻は`.local-work\send-cache.json`に記録します。次回のSendで、この3項目が一致すれば、ZIP全体を読み戻さず、変更があれば再照合します。FTPサーバーが`MDTM`に対応していないときは、毎回全体を読み戻して照合します。
 - **内容は違うが、必要なROMが揃っているとき**: 送信先のZIPのバイト列が違っていても(圧縮の有無、メンバーの順序、余分なファイルなどの違い)、現在のMRAが要求するROMがすべて入っていれば、置き換えずに再送を省略します。確認のため、送信先のZIPを一度だけ読み戻して、各メンバーのCRC・SHA-1・サイズを調べます。結果は、送信先のZIPのSHA-1・サイズ・FTP更新時刻と、要求するROMの一覧の指紋を`send-cache.json`に記録します。次回のSendで、この記録と一致すれば、読み戻さずに省略します。MRAの要求が変わったときは、指紋が変わるので、再確認します。Sendの結果では、「再送省略(必要なROMは揃っている)」と表示されます。
@@ -93,7 +97,7 @@ MRAとの照合では、MRAのZIP候補名とCRC、または部品名で探し�
 
 出力ZIPは、選択中のMRAが要求する部品の和集合として作ります。既存の出力ZIPは、部品名・SHA-1・CRC・サイズが一致すれば再利用します。通常のROM ZIPには、余分な部品があっても許容します。DATでBIOSと判定したZIPは、BIOS部品の構成と照合し、余分な部品があれば、バックアップ後に再構成します。
 
-MRAのMD5は、単純な連結・埋め込み・repeat・offset・lengthを再現できるときに照合します。interleaveまたはpatchを含む構成は、`unsupported-interleave-or-patch`と記録し、完全な検証扱いにしません。`md5="none"`と空値は`disabled`です。LaserdiscGamesのDLV映像と7zの取り込みは、対象外です。生成したZIPの部品検証は、ゲーム全体の動作確認を意味しません。
+MRAのMD5は、単純な連結・埋め込み・repeat・offset・lengthを再現できるときに照合します。interleaveまたはpatchを含む構成は、`unsupported-interleave-or-patch`と記録し、完全な検証扱いにしません。`md5="none"`と空値は`disabled`です。LaserdiscGamesのDLV映像と7zの取り込みは、対象外です。MD5が実際に不一致だったMRAは、ZIPの作成にも送信にも使わず、エラーと「MD5不一致」の除外として記録します(検証できない構成とは区別します)。生成したZIPの部品検証は、ゲーム全体の動作確認を意味しません。
 
 ## コードの構成
 
@@ -105,7 +109,7 @@ MRAのMD5は、単純な連結・埋め込み・repeat・offset・lengthを再�
 
 ## CLI(調査・保守用)
 
-GUIの操作は、CLIでも実行できます。MiSTerへ接続するときは、`config.example.json`をコピーして`config.json`を作り、`mister.host`にIPアドレス、`mister.username`にユーザー名を指定します。パスワードは、`mister.password_env`が指す環境変数に設定します。出力ZIPの圧縮は、`"output": {"compression": "stored"}`(既定)か`"deflate"`で選びます。`--work`でDB・プール・出力の保存先を変えられます(既定は`.local-work`)。以下の`local-data`は、手元に作る作業用フォルダーの例です。
+GUIの操作は、CLIでも実行できます。MiSTerへ接続するときは、`config.example.json`をコピーして`config.json`を作り、`mister.host`にIPアドレス、`mister.username`にユーザー名を指定します。パスワードは、`mister.password_env`が指す環境変数に設定します。出力ZIPの圧縮は、`"output": {"compression": "deflate"}`(既定)か`"stored"`(無圧縮)で選びます。`--work`でDB・プール・出力の保存先を変えられます(既定は`.local-work`)。以下の`local-data`は、手元に作る作業用フォルダーの例です。
 
 ```powershell
 python arcadetool.py --config config.json run .\local-data\mra .\local-data\rom-zips
@@ -113,7 +117,7 @@ python arcadetool.py --config config.json send --dry-run
 python arcadetool.py --config config.json send
 ```
 
-`run`のCLIの既定は、標準MRAのみです。`--japan-alternatives`、`--other-region-alternatives`、`--version-alternatives`、`--modified-alternatives`を組み合わせられます。`--include-alternatives`は、分類できないものも含む、全代替MRAです。`--mame-dat`でDATを指定できます。FTPが未設定か接続できないときは、MRAの取得を飛ばして、保存済みMRAで処理を続けます。保存済みMRAもないときは、停止します。
+`run`のCLIの既定は、標準MRAのみです。`--japan-alternatives`、`--english-alternatives`、`--other-region-alternatives`(英語圏も含む、日本以外のすべての地域)、`--version-alternatives`、`--modified-alternatives`を組み合わせられます。`--include-alternatives`は、分類できないものも含む、全代替MRAです。`--mame-dat`でDATを指定できます。FTPが未設定か接続できないときは、MRAの取得を飛ばして、保存済みMRAで処理を続けます。保存済みMRAもないときは、停止します。
 
 途中段階の確認や、プールの保守には、次のコマンドを使います。
 
@@ -140,7 +144,7 @@ python arcadetool.py --config config.json transfer --dry-run
 - `pack-pool`: 旧形式のばらファイルをパックZIPへ移します。パックごとに、「ハッシュ確認→パック書き込み→読み直して検証→DB更新」を済ませてから、ばらファイルを削除します。壊れた・欠けたばらファイルは、パックに入れず、削除せずに報告します。`--dry-run`は計画のみ、`--keep-loose`はばらファイルを残します。
 - `verify-pool`: DB上の全ROMを読み戻して確認します。`--quick`はSHA-1の再計算を省略します。問題があれば、内容を表示して、終了コード1で終わります。
 - `rebuild-index`: パックの`manifest.json`から、blobs・origins・パック対応表を復元します。
-- `transfer`: MRAとの照合を行わない、従来の単純な転送です。通常はGUIの`Send`か`send`を使ってください。同名のファイルが送信先にあるときは停止し、一時名でアップロードして、サイズとSHA-1を読み戻して照合した後に、リネームします。
+- `transfer`: `send`と同じMRAとの照合を行いますが、既存のファイルの置き換えと内容一致での再送省略は行わない、単純な転送です。通常はGUIの`Send`か`send`を使ってください。同名のファイルが送信先にあるときは停止し、一時名でアップロードして、サイズとSHA-1を読み戻して照合した後に、リネームします。
 
 プールの移行は、次の手順で行います(Windows)。①`.local-work\arcade.db`を別の場所へコピーしてバックアップ、②`pack-pool --dry-run`で件数を確認、③`pack-pool`、④`verify-pool`、⑤`run`で、ZIPの作成が従来どおり動くことを確認。中断しても、完了済みのパックは有効で、再実行すると残りから再開します。
 
