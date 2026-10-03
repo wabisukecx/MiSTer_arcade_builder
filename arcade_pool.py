@@ -9,7 +9,7 @@ import sqlite3
 import tempfile
 import zipfile
 import zlib
-from arcade_common import CHUNK, MAX_MEMBER, OperationCancelled, canonical_zip, check_cancel, safe_name
+from arcade_common import CHUNK, MAX_ARCHIVE_MEMBERS, MAX_ARCHIVE_TOTAL, MAX_MEMBER, OperationCancelled, canonical_zip, check_cancel, safe_name
 from arcade_store import BlobStore, PackWriteError, PackWriter
 
 def ingest(db, work: Path, roots: list[Path], skip_unchanged=False, progress=None,
@@ -57,8 +57,15 @@ def ingest(db, work: Path, roots: list[Path], skip_unchanged=False, progress=Non
                     pending = set()
                     with zipfile.ZipFile(archive) as z:
                         seen = set()
-                        for info in z.infolist():
+                        infos = z.infolist()
+                        declared = sum(info.file_size for info in infos if not info.is_dir())
+                        if len(infos) > MAX_ARCHIVE_MEMBERS or declared > MAX_ARCHIVE_TOTAL:
+                            raise OSError(f"archive too large: {len(infos)} members, {declared} bytes declared")
+                        extracted = 0
+                        for info in infos:
                             check_cancel(cancel_requested)
+                            if extracted > MAX_ARCHIVE_TOTAL:
+                                raise OSError("archive expands beyond the size limit")
                             if info.is_dir(): continue
                             name = info.filename
                             if not safe_name(name) or name in seen or info.file_size > MAX_MEMBER:
@@ -73,6 +80,7 @@ def ingest(db, work: Path, roots: list[Path], skip_unchanged=False, progress=Non
                                         size += len(block)
                                         if size > MAX_MEMBER: raise ValueError("expanded member too large")
                                         h.update(block); crc = zlib.crc32(block,crc); out.write(block)
+                                extracted += size
                                 sha = h.hexdigest(); crc_text = f"{crc & 0xffffffff:08x}"
                                 if sha in pending or store.has(sha):
                                     result["duplicate_content"] += 1

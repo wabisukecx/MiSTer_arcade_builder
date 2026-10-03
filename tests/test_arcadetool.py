@@ -482,6 +482,25 @@ class BuilderTests(unittest.TestCase):
         result = a.build(self.db, self.work, "MD5.mra")
         self.assertEqual(result["plans"][0]["md5_status"], "matched")
 
+    def test_ingest_rejects_archive_over_size_or_member_limits(self):
+        import arcade_pool
+        big = self.base / "big.zip"
+        with zipfile.ZipFile(big, "w") as z:
+            z.writestr("a", b"A" * 100)
+            z.writestr("b", b"B" * 100)
+        fine = self.base / "fine.zip"
+        with zipfile.ZipFile(fine, "w") as z:
+            z.writestr("ok", b"ok")
+        with mock.patch.object(arcade_pool, "MAX_ARCHIVE_TOTAL", 150):
+            result = a.ingest(self.db, self.work, [big, fine])
+        self.assertEqual(result["members"], 1)
+        self.assertEqual(len(result["rejected"]), 1)
+        self.assertIn("archive too large", result["rejected"][0])
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM origins WHERE archive LIKE '%big.zip'").fetchone()[0], 0)
+        with mock.patch.object(arcade_pool, "MAX_ARCHIVE_MEMBERS", 1):
+            result = a.ingest(self.db, self.work, [big])
+        self.assertIn("archive too large", result["rejected"][0])
+
     def test_member_path_and_duplicate_rejected(self):
         path = self.base / "bad.zip"
         with zipfile.ZipFile(path, "w") as z:

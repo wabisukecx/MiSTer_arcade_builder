@@ -6,6 +6,9 @@ import re
 
 CHUNK = 1024 * 1024
 MAX_MEMBER = 1024 * 1024 * 1024
+# Limits for one source archive, so a hostile ZIP cannot fill the disk or exhaust memory.
+MAX_ARCHIVE_TOTAL = 8 * 1024 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 20000
 
 class OperationCancelled(Exception):
     """Cooperative stop requested by the user."""
