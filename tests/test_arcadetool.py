@@ -498,6 +498,61 @@ class BuilderTests(unittest.TestCase):
             self.assertEqual(z.namelist(), ["x"])
         self.assertIn("MD5不一致", json.dumps(manifest["excluded"], ensure_ascii=False))
 
+    def test_md5_mismatch_parts_are_removed_from_existing_shared_bios(self):
+        self.zip("a", "bios.zip", {"good": b"abc", "bad": b"def"})
+        good_md5 = hashlib.md5(b"abc").hexdigest()
+        self.mra("Good.mra", f'<rom zip="bios.zip" md5="{good_md5}"><part name="good" crc="{crc(b"abc")}"/></rom>')
+        self.mra("Bad.mra", f'<rom zip="bios.zip" md5="{"0" * 32}"><part name="bad" crc="{crc(b"def")}"/></rom>')
+        out = self.work / "out" / "bios.zip"
+        out.parent.mkdir()
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("good", b"abc")
+            z.writestr("bad", b"def")
+
+        result = a.build_ready(self.db, self.work, bios_zips={"bios.zip"})
+
+        self.assertEqual([e["mra"] for e in result["errors"]], ["Bad.mra"])
+        with zipfile.ZipFile(out) as z:
+            self.assertEqual(z.namelist(), ["good"])
+        manifest = json.loads((self.work / "send-manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual([m["name"] for m in manifest["required"]["bios.zip"]], ["good"])
+        self.assertEqual(manifest["excluded"]["bios.zip"],
+                         [{"mra": "Bad.mra", "missing": ["MD5不一致"]}])
+        a.verify_zip(out, manifest["required"]["bios.zip"], exact=True)
+        self.assertEqual(len(list((self.work / "backups").glob("*.zip"))), 1)
+
+    def test_md5_mismatch_only_bios_is_not_created_or_required_for_send(self):
+        self.zip("a", "bios.zip", {"bad": b"def"})
+        self.mra("Bad.mra", f'<rom zip="bios.zip" md5="{"0" * 32}"><part name="bad" crc="{crc(b"def")}"/></rom>')
+
+        result = a.build_ready(self.db, self.work, bios_zips={"bios.zip"})
+
+        self.assertEqual([e["mra"] for e in result["errors"]], ["Bad.mra"])
+        self.assertFalse((self.work / "out" / "bios.zip").exists())
+        manifest = json.loads((self.work / "send-manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["required"], {})
+        self.assertEqual(manifest["excluded"]["bios.zip"],
+                         [{"mra": "Bad.mra", "missing": ["MD5不一致"]}])
+
+    def test_unsupported_md5_interleave_and_patch_remain_buildable_and_sendable(self):
+        for tag in ("interleave", "patch"):
+            with self.subTest(tag=tag):
+                target = f"{tag}.zip"
+                self.zip(tag, target, {"x": b"abc"})
+                self.mra(f"{tag}.mra", f'<rom zip="{target}" md5="{"0" * 32}"><part name="x" crc="{crc(b"abc")}"/><{tag}/></rom>')
+                result = a.build_ready(self.db, self.work, bios_zips={target})
+                self.assertEqual(result["errors"], [])
+                self.assertTrue((self.work / "out" / target).exists())
+                manifest = json.loads((self.work / "send-manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest["excluded"], {})
+                self.assertEqual([m["name"] for m in manifest["required"][target]], ["x"])
+                plan = json.loads(self.db.execute(
+                    "SELECT plan FROM builds WHERE zip_name=?", (target,)).fetchone()[0])
+                self.assertEqual(plan["md5_status"], "unsupported-interleave-or-patch")
+                sent = a.transfer(self.db, self.work, {}, dry_run=True, require_mra_match=True)
+                self.assertTrue(sent["entries"])
+                self.assertFalse(any(e.get("action") == "conflict" for e in sent["entries"]))
+
     def test_name_only_part_is_not_satisfied_by_same_bytes_under_another_name(self):
         data = b"abc"
         sha1 = hashlib.sha1(data).hexdigest()

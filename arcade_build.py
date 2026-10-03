@@ -327,7 +327,10 @@ def _build_ready(db, work, progress, cancel_requested, origin_index, plan_cache,
                         _member_union(shared_outputs.setdefault(target, {}), item)
                     except ValueError as exc:
                         shared_errors[target] = str(exc)
-    bios_outputs, bios_errors = shared_bios_members(db, mras, plan_cache, bios_zips)
+    # Incomplete games may still contribute resolved BIOS parts, and unsupported
+    # MD5 assembly is allowed. Only a confirmed MD5 mismatch excludes an MRA.
+    bios_mras = [mra for mra in mras if mra["id"] not in md5_failed]
+    bios_outputs, bios_errors = shared_bios_members(db, bios_mras, plan_cache, bios_zips)
     shared_errors.update(bios_errors)
     # Include valid BIOS members from incomplete game plans as well, but only
     # when their actual source ZIP is the BIOS set.
